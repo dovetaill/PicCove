@@ -141,7 +141,7 @@ export function Workspace() {
             max={Math.max(user.quota_bytes, 1)}
             value={Math.min(used_bytes, Math.max(user.quota_bytes, 1))}
           />
-          <p>图片公开访问，请勿上传敏感资料。</p>
+          <p>Web 上传默认公开；安卓私有图片仅本人及管理员可见。</p>
         </div>
       </aside>
       <div className="cove-workbody">
@@ -281,6 +281,10 @@ export function Gallery({ all = false }: { all?: boolean }) {
     await client.invalidateQueries({ queryKey: ['images'] });
   }
   async function copy(pictures: Picture[]) {
+    if (pictures.some((item) => !item.is_public)) {
+      toast.error('私有图片不能复制公开链接，请先在安卓端确认公开分享');
+      return;
+    }
     try {
       await navigator.clipboard.writeText(
         pictures.map((item) => imageLink(item, format)).join('\n'),
@@ -496,6 +500,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
               </div>
               <CardContent>
                 <h3 title={item.original_name}>{item.original_name}</h3>
+                {!item.is_public && <small>私有 · 本人及管理员可见</small>}
                 <p>
                   {item.width} × {item.height}
                   <span>{size(item.size_bytes)}</span>

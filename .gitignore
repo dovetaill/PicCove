@@ -10,3 +10,6 @@ uploads/
 .DS_Store
 
 release-output/
+.gradle/
+apps/android/**/build/
+apps/android/local.properties

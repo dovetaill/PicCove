@@ -17,6 +17,7 @@ export type Picture = {
   height: number;
   url: string;
   deleted_at: string | null;
+  is_public: boolean;
 };
 export type Album = { id: string; name: string };
 export type Settings = {

@@ -95,6 +95,7 @@ struct ImageRow {
     height: i32,
     created_at: DateTime<Utc>,
     deleted_at: Option<DateTime<Utc>>,
+    is_public: bool,
 }
 fn image_dto(row: ImageRow, state: &AppState) -> serde_json::Value {
     let url = format!(
@@ -334,7 +335,7 @@ async fn settings(State(state): State<Arc<AppState>>) -> ApiResult<Json<serde_js
         .await
         .map_err(internal)?;
     Ok(Json(
-        serde_json::json!({"registration_open":open,"contact_url":state.contact_url}),
+        serde_json::json!({"registration_open":open,"contact_url":state.contact_url,"private_images":true}),
     ))
 }
 #[derive(Deserialize)]
@@ -456,9 +457,14 @@ fn validate_image(bytes: &[u8]) -> ApiResult<(&'static str, &'static str, u32, u
         .map_err(|_| bad("图片损坏或解码内存超出限制"))?;
     Ok((extension, mime, image.width(), image.height()))
 }
+#[derive(Deserialize)]
+struct UploadOptions {
+    private: Option<bool>,
+}
 async fn upload_image(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(options): Query<UploadOptions>,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let user = authenticate(&headers, &state).await?;
@@ -527,8 +533,8 @@ async fn upload_image(
     let storage_key = format!("{id}.{extension}");
     let path = state.upload_dir.join(&storage_key);
     // Keep a pending row until the file is durable; interrupted uploads remain identifiable for cleanup.
-    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW()) RETURNING *")
-        .bind(id).bind(user.id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).fetch_one(&mut *tx).await.map_err(internal)?;
+    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9) RETURNING *")
+        .bind(id).bind(user.id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(!options.private.unwrap_or(false)).fetch_one(&mut *tx).await.map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     use tokio::io::AsyncWriteExt;
     let write_result = async {
@@ -571,6 +577,31 @@ async fn update_image(
     }
     let result=sqlx::query("UPDATE images SET original_name=$1,album_id=$2 WHERE id=$3 AND user_id=$4 AND deleted_at IS NULL AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM albums WHERE id=$2 AND user_id=$4))")
         .bind(name).bind(input.album_id).bind(id).bind(user.id).execute(&state.pool).await.map_err(internal)?;
+    if result.rows_affected() == 0 {
+        return Err(missing());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+#[derive(Deserialize)]
+struct VisibilityInput {
+    is_public: bool,
+}
+async fn update_visibility(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<VisibilityInput>,
+) -> ApiResult<StatusCode> {
+    let user = authenticate(&headers, &state).await?;
+    let result = sqlx::query(
+        "UPDATE images SET is_public=$1 WHERE id=$2 AND user_id=$3 AND deleted_at IS NULL",
+    )
+    .bind(input.is_public)
+    .bind(id)
+    .bind(user.id)
+    .execute(&state.pool)
+    .await
+    .map_err(internal)?;
     if result.rows_affected() == 0 {
         return Err(missing());
     }
@@ -770,6 +801,7 @@ async fn update_user(
 }
 async fn serve_image(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
     let row: ImageRow = sqlx::query_as("SELECT * FROM images WHERE id=$1 AND deleted_at IS NULL")
@@ -778,6 +810,14 @@ async fn serve_image(
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;
+    if !row.is_public {
+        let user = authenticate(&headers, &state)
+            .await
+            .map_err(|_| missing())?;
+        if user.id != row.user_id && !user.is_admin {
+            return Err(missing());
+        }
+    }
     let bytes = tokio::fs::read(state.upload_dir.join(row.storage_key))
         .await
         .map_err(|e| {
@@ -828,6 +868,7 @@ fn router(state: Arc<AppState>) -> Router {
             patch(update_image).delete(delete_image),
         )
         .route("/api/v1/albums", get(albums).post(create_album))
+        .route("/api/v1/images/{id}/visibility", patch(update_visibility))
         .route("/api/v1/albums/{id}", axum::routing::delete(delete_album))
         .route("/api/v1/admin/users", get(users).post(create_user))
         .route("/api/v1/admin/users/{id}", patch(update_user))

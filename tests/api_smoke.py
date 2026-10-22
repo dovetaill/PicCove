@@ -46,9 +46,9 @@ def png(width=2, height=3):
     pixels = b''.join(b'\0' + os.urandom(width * 3) for _ in range(height))
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', width, height, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b'')
 
-def upload(who, data, expected=201):
+def upload(who, data, expected=201, private=False):
     body = b'--piccove-test-boundary\r\nContent-Disposition: form-data; name="file"; filename="photo.png"\r\nContent-Type: image/png\r\n\r\n' + data + b'\r\n--piccove-test-boundary--\r\n'
-    return request(who, '/api/v1/images', 'POST', body, expected)
+    return request(who, '/api/v1/images' + ('?private=true' if private else ''), 'POST', body, expected)
 
 def login(who, name, password=PASSWORD, expected=200):
     return request(who, '/api/v1/auth/login', 'POST', {'username': name, 'password': password}, expected)
@@ -80,6 +80,23 @@ image = upload(alice, pixels)
 image_path = '/api/v1/images/' + image['id']
 public_path = '/i/' + image['id']
 assert request(anonymous, public_path, raw=True) == pixels
+assert image['is_public'] is True
+assert request(anonymous, '/api/v1/settings')['private_images'] is True
+private = upload(alice, png(), private=True)
+assert private['is_public'] is False
+private_path = '/i/' + private['id']
+visibility_path = '/api/v1/images/' + private['id'] + '/visibility'
+request(anonymous, private_path, expected=404)
+request(bob, private_path, expected=404)
+assert request(alice, private_path, raw=True) == request(admin, private_path, raw=True)
+request(bob, visibility_path, 'PATCH', {'is_public': True}, 404)
+request(alice, visibility_path, 'PATCH', {'is_public': True}, 403, origin='https://untrusted.example')
+request(alice, visibility_path, 'PATCH', {'is_public': True}, 204)
+assert request(anonymous, private_path, raw=True)
+request(alice, visibility_path, 'PATCH', {'is_public': False}, 204)
+request(anonymous, private_path, expected=404)
+request(alice, '/api/v1/images/' + private['id'], 'DELETE', expected=204)
+request(alice, private_path, expected=404)
 assert request(bob, '/api/v1/images')['items'] == []
 request(bob, image_path, 'DELETE', expected=404)
 request(bob, image_path, 'PATCH', {'original_name': 'stolen', 'album_id': None}, 404)
