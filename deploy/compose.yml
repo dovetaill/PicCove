@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: piccove
+      POSTGRES_DB: piccove
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Run install.sh first}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U piccove -d piccove -h 127.0.0.1']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    read_only: true
+    environment:
+      DATABASE_URL: postgres://piccove:${DATABASE_PASSWORD}@postgres:5432/piccove
+      PICCOVE_ADMIN_USERNAME: admin
+      PICCOVE_ADMIN_PASSWORD: ${PICCOVE_ADMIN_PASSWORD:-}
+      CORS_ORIGIN: ${PICCOVE_ORIGIN:?Run install.sh first}
+      PUBLIC_BASE_URL: ${PICCOVE_ORIGIN}
+      CONTACT_URL: ${CONTACT_URL:-}
+    volumes:
+      - images:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:3001/api/health']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:uid=101,gid=101,mode=0700
+    ports:
+      - '127.0.0.1:${PICCOVE_PORT:-8080}:8080'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/api/health']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  database:
+  images:

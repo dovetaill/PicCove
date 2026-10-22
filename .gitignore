@@ -8,3 +8,5 @@ uploads/
 *.log
 *.tsbuildinfo
 .DS_Store
+
+release-output/

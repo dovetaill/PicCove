@@ -1,0 +1,45 @@
+name: Verify release package
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Prepare build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt --target x86_64-unknown-linux-musl
+      - name: Validate scripts and build
+        env:
+          RUSTUP_TOOLCHAIN: 1.96.0
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_release.py'
+          bash scripts/version-release.sh build --work-parent "$RUNNER_TEMP" --output "$RUNNER_TEMP/piccove-release"
+      - name: Install and exercise packaged application
+        run: |
+          mkdir "$RUNNER_TEMP/piccove-unpacked"
+          tar -xzf "$RUNNER_TEMP"/piccove-release/*.tar.gz -C "$RUNNER_TEMP/piccove-unpacked"
+          python3 -B scripts/smoke.py "$RUNNER_TEMP"/piccove-unpacked/piccove-* --work-parent "$RUNNER_TEMP"
+      - name: Remove final test artifacts
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/piccove-release" "$RUNNER_TEMP/piccove-unpacked"

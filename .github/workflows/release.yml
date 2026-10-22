@@ -1,0 +1,54 @@
+name: Publish tagged release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify tag matches all version files
+        run: python3 -B scripts/release.py validate "$GITHUB_REF_NAME"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Prepare build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt --target x86_64-unknown-linux-musl
+      - name: Build immutable archive
+        env:
+          RUSTUP_TOOLCHAIN: 1.96.0
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_release.py'
+          bash scripts/version-release.sh build --tag "$GITHUB_REF_NAME" --work-parent "$RUNNER_TEMP" --output "$RUNNER_TEMP/piccove-release"
+      - name: Verify packaged application
+        run: |
+          mkdir "$RUNNER_TEMP/piccove-unpacked"
+          tar -xzf "$RUNNER_TEMP"/piccove-release/*.tar.gz -C "$RUNNER_TEMP/piccove-unpacked"
+          python3 -B scripts/smoke.py "$RUNNER_TEMP"/piccove-unpacked/piccove-* --work-parent "$RUNNER_TEMP"
+      - name: Publish only after verified upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B scripts/publish.py "$RUNNER_TEMP/piccove-release" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+      - name: Remove task artifacts
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/piccove-release" "$RUNNER_TEMP/piccove-unpacked"
