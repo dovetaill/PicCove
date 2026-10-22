@@ -1,0 +1,798 @@
+:root {
+  --primary: #246b5a;
+  --primary-foreground: #fff;
+  --ring: #246b5a;
+  --background: #f7f9f8;
+  --foreground: #223d37;
+  --muted-foreground: #74837e;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'PingFang SC',
+    sans-serif;
+}
+body {
+  margin: 0;
+}
+#root {
+  display: block;
+  width: 100%;
+  min-height: 100vh;
+}
+button,
+a,
+input {
+  touch-action: manipulation;
+}
+.cove-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  white-space: nowrap;
+}
+.cove-brand > span {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #246b5a;
+  color: white;
+}
+.cove-brand strong {
+  font-size: 22px;
+  letter-spacing: -0.7px;
+}
+.cove-brand small {
+  font-size: 13px;
+  font-weight: 400;
+  color: #7c8d85;
+  margin-left: 8px;
+  letter-spacing: 1px;
+}
+.cove-home {
+  max-width: 1240px;
+  margin: auto;
+  padding: 0 40px;
+}
+.cove-public-header {
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e3e9e5;
+}
+.cove-public-header nav {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  font-size: 13px;
+}
+.cove-hero {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  align-items: center;
+  min-height: 590px;
+  gap: 35px;
+}
+.cove-eyebrow {
+  font-size: 11px;
+  letter-spacing: 2.5px;
+  font-weight: 600;
+  color: #618579;
+  margin-bottom: 24px;
+}
+.cove-hero h1 {
+  font-size: clamp(36px, 4.4vw, 58px);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -2px;
+  margin: 0 0 24px;
+}
+.cove-hero h1 em {
+  font-style: normal;
+  color: #418d74;
+}
+.cove-intro {
+  line-height: 2;
+  color: #7a8e84;
+  font-size: 15px;
+}
+.cove-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin: 30px 0 18px;
+}
+.cove-actions > span {
+  font-size: 12px;
+  color: #85968d;
+}
+.cove-muted {
+  color: #7c8d85;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.cove-art {
+  position: relative;
+  height: 390px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, #dcece1, transparent 70%);
+}
+.cove-art-card {
+  position: absolute;
+  width: 220px;
+  height: 275px;
+  border: 10px solid white;
+  border-bottom-width: 35px;
+  border-radius: 15px;
+  box-shadow: 0 25px 70px #244c3920;
+  background: white;
+}
+.cove-art-card > div {
+  height: 100%;
+  border-radius: 6px;
+}
+.cove-art-back {
+  left: 15px;
+  top: 40px;
+  transform: rotate(-12deg);
+}
+.cove-art-back > div {
+  background:
+    radial-gradient(circle at 70% 30%, #f8e5bf 0 14%, transparent 14.5%),
+    linear-gradient(150deg, transparent 50%, #749992 51% 70%, #316258 70%),
+    #c4dcd5;
+}
+.cove-art-front {
+  left: 165px;
+  top: 90px;
+  transform: rotate(9deg);
+}
+.cove-art-front > div {
+  background:
+    radial-gradient(ellipse at 50% 115%, #466a50 0 40%, transparent 40.5%),
+    radial-gradient(ellipse at -20% 100%, #8caa7b 0 60%, transparent 60.5%),
+    linear-gradient(#e1e7cc, #c3d9ce);
+}
+.cove-art-front > span {
+  font-size: 9px;
+  display: block;
+  padding: 8px 0;
+  color: #7e8c83;
+  text-align: center;
+}
+.cove-art-label {
+  position: absolute;
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  bottom: 0;
+  left: 30px;
+  background: #fff;
+  padding: 14px 20px;
+  box-shadow: 0 8px 30px #244c3910;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #487b65;
+}
+.cove-features {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 22px;
+}
+.cove-features [data-slot='card-content'] {
+  padding: 28px;
+}
+.cove-feature-icon {
+  color: #3f8068;
+  margin-bottom: 22px;
+  width: 26px;
+  height: 26px;
+}
+.cove-features h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.cove-features p {
+  color: #7d8d84;
+  font-size: 13px;
+  line-height: 1.9;
+}
+.cove-public-note {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  color: #859389;
+  font-size: 12px;
+  line-height: 1.8;
+  margin: 30px 0 55px;
+}
+.cove-public-note svg {
+  flex-shrink: 0;
+  width: 18px;
+}
+.cove-home footer {
+  border-top: 1px solid #e3e9e5;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 25px 0;
+  font-size: 12px;
+  color: #89968f;
+}
+.cove-auth {
+  max-width: 480px;
+  margin: 7vh auto;
+  padding: 24px;
+  display: grid;
+  gap: 28px;
+}
+.cove-auth [data-slot='card-content'] {
+  padding: 32px;
+}
+.cove-auth h1 {
+  font-size: 25px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.cove-auth .cove-eyebrow {
+  margin-bottom: 12px;
+}
+.cove-form {
+  display: grid;
+  gap: 22px;
+  margin-top: 25px;
+}
+.cove-form label {
+  display: grid;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.cove-form .cove-check {
+  display: flex;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.cove-auth-links {
+  display: grid;
+  gap: 12px;
+  margin: 24px 0 12px;
+  font-size: 12px;
+  color: #417e65;
+}
+.cove-workspace {
+  display: flex;
+  min-height: 100vh;
+}
+.cove-sidebar {
+  width: 238px;
+  flex-shrink: 0;
+  background: #fff;
+  border-right: 1px solid #e5ebe6;
+  padding: 30px 20px;
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+.cove-sidebar .cove-brand {
+  margin: 0 10px 35px;
+}
+.cove-sidebar .cove-brand strong {
+  font-size: 20px;
+}
+.cove-nav-label {
+  display: block;
+  font-size: 10px;
+  color: #96a49b;
+  letter-spacing: 1.2px;
+  padding: 10px 14px;
+}
+.cove-sidebar nav {
+  display: grid;
+  gap: 7px;
+}
+.cove-sidebar nav > a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  color: #74847a;
+  font-size: 13px;
+}
+.cove-sidebar nav > a svg {
+  width: 18px;
+  height: 18px;
+}
+.cove-sidebar nav > a.active {
+  color: #2d735b;
+  background: #eaf3ed;
+  font-weight: 600;
+}
+.cove-storage {
+  margin-top: auto;
+  padding: 35px 12px 0;
+  font-size: 11px;
+  color: #84968b;
+}
+.cove-storage strong {
+  display: block;
+  font-size: 14px;
+  color: #4e6b59;
+  margin: 10px 0;
+}
+.cove-storage small {
+  color: #98a59c;
+  font-size: 11px;
+  font-weight: 400;
+}
+.cove-storage progress {
+  width: 100%;
+  height: 5px;
+  accent-color: #4c9271;
+  margin-bottom: 12px;
+}
+.cove-storage p {
+  line-height: 1.9;
+}
+.cove-workbody {
+  flex: 1;
+  min-width: 0;
+}
+.cove-workheader {
+  height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 38px;
+  background: #ffffffbd;
+  border-bottom: 1px solid #e5ebe6;
+  font-size: 12px;
+}
+.cove-workheader > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.cove-avatar {
+  background: #e6f0e8;
+  color: #518061;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+}
+.cove-workmain {
+  max-width: 1440px;
+  margin: auto;
+  padding: 36px 38px;
+}
+.cove-heading {
+  margin-bottom: 28px;
+}
+.cove-heading h1 {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.7px;
+  margin-bottom: 7px;
+}
+.cove-heading p {
+  font-size: 13px;
+  color: #8b9a90;
+  line-height: 1.8;
+}
+.cove-drop {
+  border: 1.5px dashed #bdd5c6;
+  border-radius: 14px;
+  background: linear-gradient(120deg, #f0f7f2, #fafcfb);
+  padding: 27px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-items: center;
+  text-align: center;
+}
+.cove-drop.is-dragging {
+  background: #dfefe3;
+  border-color: #327252;
+}
+.cove-upload-icon {
+  padding: 15px;
+  border-radius: 14px;
+  background: #e0eee4;
+  color: #4d8b68;
+  margin-bottom: 5px;
+}
+.cove-upload-icon svg {
+  width: 26px;
+  height: 26px;
+}
+.cove-drop h2 {
+  font-size: 16px;
+  font-weight: 500;
+}
+.cove-drop p {
+  font-size: 12px;
+  color: #8a9b8f;
+}
+.cove-drop button {
+  margin: 7px;
+}
+.cove-drop small {
+  font-size: 10px;
+  color: #9caaa0;
+}
+.cove-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin: 30px 0 18px;
+}
+.cove-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.cove-toolbar h2 {
+  font-weight: 600;
+  font-size: 16px;
+  white-space: nowrap;
+}
+.cove-toolbar h2 span {
+  font-size: 11px;
+  background: #eaf0eb;
+  color: #799080;
+  border-radius: 6px;
+  padding: 3px 6px;
+  margin-left: 5px;
+}
+.cove-toolbar [data-slot='select-trigger'],
+.cove-batch [data-slot='select-trigger'] {
+  width: 150px;
+  background: white;
+}
+.cove-batch {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+  font-size: 12px;
+  color: #7e9083;
+}
+.cove-check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.cove-check input,
+.cove-image input {
+  accent-color: #397856;
+  width: 15px;
+  height: 15px;
+}
+.cove-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 20px;
+}
+.cove-image {
+  overflow: hidden;
+}
+.cove-image-preview {
+  height: 175px;
+  position: relative;
+  background: #eef2ee;
+}
+.cove-image-preview a {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 12px;
+}
+.cove-image-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cove-image-preview input {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  box-shadow: 0 1px 4px #0002;
+}
+.cove-image [data-slot='card-content'] {
+  padding: 14px;
+}
+.cove-image h3 {
+  font-weight: 500;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cove-image p {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #97a59a;
+  margin: 8px 0;
+}
+.cove-image-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  border-top: 1px solid #edf1ed;
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.cove-image-actions button:first-child {
+  margin-right: auto;
+}
+.cove-owner {
+  font-size: 9px;
+  color: #97a59a;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cove-pager {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  margin: 30px 0;
+  font-size: 12px;
+  color: #8c9b91;
+}
+.cove-empty {
+  padding: 60px 20px;
+  text-align: center;
+  color: #8d9d92;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  font-size: 13px;
+  background: #fff;
+  border: 1px solid #e6ece7;
+  border-radius: 12px;
+}
+.cove-empty svg {
+  width: 30px;
+  height: 30px;
+  color: #aac0b0;
+}
+.cove-inline-form {
+  display: flex;
+  gap: 15px;
+  max-width: 500px;
+}
+.cove-albums {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 20px;
+  margin: 25px 0;
+}
+.cove-albums h2 {
+  margin: 15px 0;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.cove-albums svg {
+  color: #679378;
+}
+.cove-narrow {
+  max-width: 530px;
+}
+.cove-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 25px;
+}
+.cove-setting h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.cove-setting p {
+  font-size: 12px;
+  color: #8a9b8e;
+  margin: 8px 0;
+}
+.cove-form label.cove-setting {
+  display: flex;
+}
+.cove-user-table {
+  margin-top: 25px;
+}
+.cove-table-scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  white-space: nowrap;
+}
+th {
+  font-weight: 500;
+  color: #96a398;
+  padding: 14px;
+}
+td {
+  padding: 17px 14px;
+  border-top: 1px solid #eaf0eb;
+}
+td small {
+  display: block;
+  color: #7a9583;
+  font-size: 10px;
+  margin-top: 4px;
+}
+.cove-status {
+  display: inline-block;
+  background: #e8f4eb;
+  color: #588965;
+  padding: 4px 9px;
+  border-radius: 5px;
+  font-size: 10px;
+}
+.cove-status.is-disabled {
+  background: #f8eae8;
+  color: #af6c61;
+}
+.cove-error {
+  background: #fff0ec;
+  color: #ab584a;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cove-loading {
+  padding: 50px;
+  text-align: center;
+  color: #819588;
+}
+@media (min-width: 1600px) {
+  .cove-gallery {
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  }
+}
+@media (max-width: 1000px) {
+  .cove-home {
+    padding: 0 25px;
+  }
+  .cove-art {
+    transform: scale(0.8);
+    transform-origin: center;
+  }
+  .cove-art-front {
+    left: 120px;
+  }
+  .cove-sidebar {
+    width: 200px;
+    padding: 24px 12px;
+  }
+  .cove-workmain {
+    padding: 25px;
+  }
+  .cove-workheader {
+    padding: 0 25px;
+  }
+  .cove-hero {
+    min-height: 520px;
+  }
+  .cove-actions {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 760px) {
+  .cove-hero {
+    grid-template-columns: 1fr;
+    padding: 55px 0 35px;
+    min-height: auto;
+  }
+  .cove-art {
+    display: none;
+  }
+  .cove-hero h1 {
+    font-size: 40px;
+  }
+  .cove-features {
+    grid-template-columns: 1fr;
+  }
+  .cove-public-header nav > a {
+    display: none;
+  }
+  .cove-public-header {
+    height: 80px;
+  }
+  .cove-home footer {
+    flex-direction: column;
+  }
+  .cove-workspace {
+    display: block;
+  }
+  .cove-sidebar {
+    position: static;
+    width: 100%;
+    height: auto;
+    padding: 18px;
+    border-right: 0;
+    border-bottom: 1px solid #e5ebe6;
+  }
+  .cove-sidebar .cove-brand {
+    margin: 0 0 15px;
+  }
+  .cove-sidebar nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .cove-sidebar nav > a {
+    font-size: 12px;
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .cove-sidebar .cove-nav-label,
+  .cove-storage {
+    display: none;
+  }
+  .cove-workheader {
+    height: 62px;
+    padding: 0 18px;
+  }
+  .cove-workmain {
+    padding: 22px 18px;
+  }
+  .cove-gallery {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .cove-image-preview {
+    height: 140px;
+  }
+  .cove-toolbar {
+    flex-wrap: wrap;
+  }
+  .cove-heading h1 {
+    font-size: 23px;
+  }
+  .cove-batch {
+    gap: 8px;
+  }
+  .cove-setting {
+    gap: 12px;
+  }
+  .cove-image-actions button {
+    padding: 5px;
+  }
+  .cove-image-actions button:first-child {
+    font-size: 11px;
+  }
+  .cove-public-note {
+    align-items: flex-start;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
