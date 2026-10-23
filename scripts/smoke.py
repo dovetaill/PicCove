@@ -72,8 +72,9 @@ def smoke(bundle, work_parent):
                 options = {'user': account.pw_uid, 'group': account.pw_gid, 'extra_groups': []}
             env = {**os.environ, 'PICCOVE_TEST_URL': origin,
                    'PICCOVE_TEST_ORIGIN': origin, 'PICCOVE_TEST_ADMIN_PASSWORD': config['PICCOVE_ADMIN_PASSWORD']}
-            subprocess.run(['python3', '-B', str(ROOT / 'tests/api_smoke.py')],
-                           cwd=ROOT, env=env, check=True, **options)
+            # The unprivileged HTTP client cannot traverse a private runner workspace.
+            subprocess.run(['python3', '-B', '-'], input=(ROOT / 'tests/api_smoke.py').read_bytes(),
+                           cwd='/', env=env, check=True, **options)
             backup = work / 'manual-backup'
             subprocess.run([*cli, 'backup', '--backup', str(backup)], check=True)
             subprocess.run(['sha256sum', '-c', 'SHA256SUMS'], cwd=backup, check=True)
