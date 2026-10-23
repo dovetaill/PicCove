@@ -8,6 +8,8 @@
 
 Android 独立相册首版见 [安卓安装、构建和使用说明](docs/ANDROID.md)。支持手动上传、私有照片、相册整理及确认后公开分享；需要升级到支持私有图片的服务端。
 
+正式域名定为 `tu.imggg.com`，本机部署状态及具体安装命令见 [域名部署说明](docs/DEPLOY-tu.imggg.com.md)。
+
 > 当前提供 Linux x86_64 发行流程；仓库为 [dovetaill/PicCove](https://github.com/dovetaill/PicCove)，本轮尚未发布正式 Release。页面截图来自实际运行的 PicCove，图片和账号为演示数据。
 
 ## 页面预览
@@ -243,6 +245,8 @@ git push origin v0.1.1
 版本脚本**不会自动提交、创建 tag 或推送**。不要移动已经发布的 tag；修复使用新版本。
 
 ### GitHub Actions 自动流程
+
+GitHub Actions 仅构建 Linux 服务端和 Web；Android 与 Windows PC 客户端不加入 GitHub 构建。
 
 - `main` push / PR：构建、测试并在独立 Compose 项目安装发行包，完成 HTTP 功能自测。
 - `v*` tag：校验 tag 与 Cargo/npm 四份版本文件一致，构建发行包并完成自测。
