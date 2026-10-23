@@ -8,7 +8,7 @@
 
 Android 独立相册首版见 [安卓安装、构建和使用说明](docs/ANDROID.md)。支持手动上传、私有照片、相册整理及确认后公开分享；需要升级到支持私有图片的服务端。
 
-正式域名定为 `tu.imggg.com`，本机部署状态及具体安装命令见 [域名部署说明](docs/DEPLOY-tu.imggg.com.md)。
+正式域名定为 `tu.jpggg.com`，本机部署状态及具体安装命令见 [域名部署说明](docs/DEPLOY-tu.jpggg.com.md)。
 
 > 当前提供 Linux x86_64 发行流程；仓库为 [dovetaill/PicCove](https://github.com/dovetaill/PicCove)，本轮尚未发布正式 Release。页面截图来自实际运行的 PicCove，图片和账号为演示数据。
 
@@ -20,7 +20,7 @@ Android 独立相册首版见 [安卓安装、构建和使用说明](docs/ANDROI
 bash piccove.sh
 ```
 
-安装默认域名 `https://tu.imggg.com`、目录 `/opt/piccove`、本机端口 `18081`。本地构建使用普通开发账号；安装和运维使用能访问安装目录与 Docker 的账号。脚本不会自动安装工具或更改系统权限。
+安装默认域名 `https://tu.jpggg.com`、目录 `/opt/piccove`、本机端口 `18081`。本地构建使用普通开发账号；安装和运维使用能访问安装目录与 Docker 的账号。脚本不会自动安装工具或更改系统权限。
 
 服务端发行包统一放在 `release-output/server/v版本/`，Android APK 单独放在 `release-output/android/`。旧的 `android-preview/server` 是联调产物命名，已整理迁出；服务端不属于安卓项目。安装后同一入口位于 `/opt/piccove/piccove.sh`。
 

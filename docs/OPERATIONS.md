@@ -48,7 +48,7 @@ bash piccove.sh backup --backup /var/backups/piccove/本次备份目录
 bash piccove.sh upgrade --archive /path/to/新版.tar.gz --backup /var/backups/piccove/升级前备份目录
 ```
 
-源码目录默认操作 `/opt/piccove`；安装目录中的脚本默认操作自身目录。多实例用 `--directory` 指定，不能共享同一个 Compose 项目名。安装时可传 `--project`、`--origin`、`--port`，默认分别为 `piccove-tu`、`https://tu.imggg.com`、`18081`。
+源码目录默认操作 `/opt/piccove`；安装目录中的脚本默认操作自身目录。多实例用 `--directory` 指定，不能共享同一个 Compose 项目名。安装时可传 `--project`、`--origin`、`--port`，默认分别为 `piccove-tu`、`https://tu.jpggg.com`、`18081`。
 
 ## 安全边界和失败处理
 
@@ -58,4 +58,4 @@ bash piccove.sh upgrade --archive /path/to/新版.tar.gz --backup /var/backups/p
 - 备份目录权限 0700，凭据副本 0600；备份含数据库密码，妥善保管。完整备份才写出 SHA256SUMS，失败产物保留用于排错，不可直接恢复。恢复流程见 [BACKUP.md](BACKUP.md)，暂不提供自动覆盖正式数据的恢复按钮。
 - 升级期间不恢复写入；失败时停止 API／网页并保留数据库、图片和备份，不自动回退二进制。升级只接受更高版本；旧 API 忽略私有图片权限，不能直接降级。
 - 发版要求 main、干净工作区、版本一致及新 tag。不会自动提交、自动加版本、部署生产或修改 Nginx。GitHub 仍只构建 Linux 服务端和 Web；没有 Android／Windows 构建。
-- 该入口不安装 Docker、Rust、Node、系统软件或证书，不修改现有文件权限。DNS、HTTPS 仍按 [域名部署说明](DEPLOY-tu.imggg.com.md) 完成；本机健康正常不代表公网已经上线。
+- 该入口不安装 Docker、Rust、Node、系统软件或证书，不修改现有文件权限。DNS、HTTPS 仍按 [域名部署说明](DEPLOY-tu.jpggg.com.md) 完成；本机健康正常不代表公网已经上线。

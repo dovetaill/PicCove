@@ -16,7 +16,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INSTALL = Path('/opt/piccove')
-DEFAULT_ORIGIN = 'https://tu.imggg.com'
+DEFAULT_ORIGIN = 'https://tu.jpggg.com'
 
 
 def run(args, cwd=None, **kwargs):
