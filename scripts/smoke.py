@@ -15,6 +15,13 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def check_port_released(port):
+    with socket.socket() as listener:
+        # TIME_WAIT is not a listener; an active listening socket still blocks this bind.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('127.0.0.1', port))
+
+
 def package(stage, output):
     manifest = json.loads((stage / 'release.json').read_text())
     manifest['files'] = {str(p.relative_to(stage)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -100,8 +107,6 @@ def smoke(bundle, work_parent):
             for image in set(before_images) - set(current_images):
                 assert subprocess.run(['docker', 'image', 'inspect', image], stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL).returncode != 0, image
-            print(json.dumps({'release_smoke': 'passed', 'install_update_backup': 'passed',
-                              'metadata_preserved': True, 'project': project, 'port': port}))
         finally:
             # Only this invocation's containers, volumes and images are eligible for removal.
             if (release / '.env').exists():
@@ -112,8 +117,10 @@ def smoke(bundle, work_parent):
                                               f'label=com.docker.compose.project={project}']).strip()
             if remaining or volumes:
                 raise RuntimeError('测试资源尚未清理：' + project)
-            with socket.socket() as listener:
-                listener.bind(('127.0.0.1', port))
+            check_port_released(port)
+
+        print(json.dumps({'release_smoke': 'passed', 'install_update_backup': 'passed',
+                              'metadata_preserved': True, 'project': project, 'port': port}))
 
 
 if __name__ == '__main__':
