@@ -12,6 +12,20 @@ Android 独立相册首版见 [安卓安装、构建和使用说明](docs/ANDROI
 
 > 当前提供 Linux x86_64 发行流程；仓库为 [dovetaill/PicCove](https://github.com/dovetaill/PicCove)，本轮尚未发布正式 Release。页面截图来自实际运行的 PicCove，图片和账号为演示数据。
 
+## 一键管理
+
+在源码目录运行一个入口，按中文菜单选择安装、打包、发版或运维：
+
+```bash
+bash piccove.sh
+```
+
+安装默认域名 `https://tu.imggg.com`、目录 `/opt/piccove`、本机端口 `18081`。本地构建使用普通开发账号；安装和运维使用能访问安装目录与 Docker 的账号。脚本不会自动安装工具或更改系统权限。
+
+服务端发行包统一放在 `release-output/server/v版本/`，Android APK 单独放在 `release-output/android/`。旧的 `android-preview/server` 是联调产物命名，已整理迁出；服务端不属于安卓项目。安装后同一入口位于 `/opt/piccove/piccove.sh`。
+
+[菜单、命令及升级备份说明](docs/OPERATIONS.md)。GitHub 发版会明确确认并推送 main 与 tag；只构建 Linux 服务端和 Web，不构建 Android／Windows PC。
+
 ## 页面预览
 
 ### 首页
@@ -206,13 +220,13 @@ cp .env "$BACKUP_DIR/config.env"
 sudo apt-get install -y build-essential musl-tools python3
 rustup toolchain install 1.96.0 --profile minimal --component rustfmt --target x86_64-unknown-linux-musl
 # 另需已安装 Node.js 22+ 与 npm。
-RUSTUP_TOOLCHAIN=1.96.0 bash scripts/version-release.sh build --output ./release-output/v0.1.0
+RUSTUP_TOOLCHAIN=1.96.0 bash piccove.sh build
 ```
 
 脚本检查 Rust 格式、运行单元测试、编译静态 musl API、构建网页并运行前端断言，输出：
 
 ```text
-release-output/v0.1.0/
+release-output/server/v0.1.0/
 ├── piccove-v0.1.0-linux-x86_64.tar.gz
 ├── SHA256SUMS
 └── release.json
@@ -223,26 +237,22 @@ release-output/v0.1.0/
 ### 同步版本并创建 tag
 
 ```bash
-bash scripts/version-release.sh version              # 检查四份清单／锁文件版本
-bash scripts/version-release.sh version --set 0.1.1   # 下一版示例，首次发布可保留 0.1.0
+bash piccove.sh version                              # 检查四份清单／锁文件版本
+bash piccove.sh version --set 0.1.1   # 下一版示例，首次发布可保留 0.1.0
 # 检查差异，按项目规范用中文标题与详细正文提交实际变更。
 git add apps/api/Cargo.toml apps/api/Cargo.lock admin/package.json admin/package-lock.json
 # git commit：正文记录背景、内容、影响和实际验证，勿省略。
 ```
 
-先将全部发行源码提交并推送到你自己的 GitHub 仓库，再创建与版本完全一致的附注 tag：
+先把全部发行源码提交到 `main`，再通过菜单「GitHub 发版」，或执行：
 
 ```bash
-# 当前仓库已配置该 SSH 远端；新克隆可直接使用这一地址。
-# git clone git@github-dovetaill:dovetaill/PicCove.git
-git remote -v
-git push -u origin main
-bash scripts/version-release.sh validate v0.1.1
-git tag -a v0.1.1 -m '发布 v0.1.1：变更与验证结果见对应提交。'
-git push origin v0.1.1
+bash piccove.sh release --yes
 ```
 
-版本脚本**不会自动提交、创建 tag 或推送**。不要移动已经发布的 tag；修复使用新版本。
+该命令检查版本一致性、工作区干净及 tag 不存在，然后创建当前版本的附注 tag，原子推送 main 与 tag，由 Actions 构建、验证并发布。它不会自动提交源码或递增版本；重复版本会拒绝，先用「版本」菜单同步新版本并提交。推送失败会保留本地 tag 供核查；不要随意删除或移动已经发布的 tag。
+
+原来的 `scripts/version-release.sh` 仍为底层兼容入口，供现有 CI 调用。
 
 ### GitHub Actions 自动流程
 

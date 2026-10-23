@@ -29,17 +29,16 @@ dig @8.8.8.8 tu.imggg.com A +short
 
 当前本机已有含安卓私有图片支持的测试发行包。它是本地构建包，不是已发布的 GitHub Release；不要误用旧的 `release-output/v0.1.0` 包。
 
-下面的操作会创建正式安装目录、数据库卷和图片卷；只在决定开始安装时执行：
+现在不必逐条解压和启动，在源码目录执行：
 
 ```bash
-cd /home/wwwroot/piccove/release-output/android-preview/server
-sha256sum -c SHA256SUMS
-# 必须为全新的安装目录；mkdir 不加 -p，避免覆盖既有安装。
-sudo mkdir /opt/piccove
-sudo tar -xzf piccove-v0.1.0-linux-x86_64.tar.gz --strip-components=1 -C /opt/piccove
-cd /opt/piccove
-sudo bash install.sh --origin https://tu.imggg.com --port 18081 --project piccove-tu
+cd /home/wwwroot/piccove
+bash piccove.sh
 ```
+
+选择「1 安装」，默认发行包为 `release-output/server/v0.1.0/piccove-v0.1.0-linux-x86_64.tar.gz`，安装目录 `/opt/piccove`、网站 `https://tu.imggg.com`、端口 `18081`。菜单会校验包、解压、生成配置并启动服务。需要有安装目录和 Docker 访问权限；当前服务器可用 root 执行安装，但源码编译仍须普通开发账号。
+
+旧 `android-preview/server` 已迁出：服务端包与 Android APK 完全独立。此处的现有包仍为原本地构建包，内容与校验值没有改变，不冒充正式 GitHub Release。
 
 需要 Docker Engine、Compose 和 Python 3.11+；发行包安装不需要 Rust 或 Node.js。首次安装拉取基础镜像，生成 `.env` 并启动 PostgreSQL、API 和网页。所有数据库／原图保存在该 Compose 项目的独立卷中。
 
@@ -49,9 +48,9 @@ sudo bash install.sh --origin https://tu.imggg.com --port 18081 --project piccov
 
 ```bash
 cd /opt/piccove
-sudo docker compose ps
-curl -f http://127.0.0.1:18081/api/health
-sudo docker compose logs --tail=100
+bash piccove.sh status
+bash piccove.sh health
+bash piccove.sh logs
 ```
 
 安装失败时保留 `.env`，处理错误后运行 `sudo bash install.sh --resume`，不要重新生成数据库凭据。程序按 HTTPS Origin 配置，因此不能把直接访问本机 HTTP 端口作为浏览器登录验收。
@@ -98,10 +97,10 @@ server {
 
 ```bash
 cd /opt/piccove
-sudo docker compose logs --tail=100
-sudo docker compose restart api web
-# 停机保留数据：
-sudo docker compose down
+bash piccove.sh logs
+bash piccove.sh restart
+# 停机保留容器与数据：
+bash piccove.sh stop
 ```
 
 不要执行 `docker compose down -v`，它会删数据库与原图。备份、升级和私有照片版本回退限制见 [README](../README.md) 与 [ANDROID.md](ANDROID.md)。

@@ -37,7 +37,7 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.96.0
         run: |
-          python3 -B -m unittest discover -s tests -p 'test_release.py'
+          python3 -B -m unittest discover -s tests -p 'test_*.py'
           bash scripts/version-release.sh build --tag "$GITHUB_REF_NAME" --work-parent "$RUNNER_TEMP" --output "$RUNNER_TEMP/piccove-release"
       - name: Verify packaged application
         run: |
