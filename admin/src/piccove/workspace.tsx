@@ -10,6 +10,7 @@ import {
   LogOut,
   Menu,
   Pencil,
+  QrCode,
   Settings2,
   ShieldCheck,
   Trash2,
@@ -49,6 +50,7 @@ import {
 } from './api';
 import { Brand } from './public';
 import { AccountSecurity } from './security';
+import { ShareQr } from './share-qr';
 import { SystemSettings } from './system';
 
 function message(error: unknown) {
@@ -261,6 +263,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
   const [page, setPage] = useState(1);
   const [album, setAlbum] = useState('all');
   const [format, setFormat] = useState('url');
+  const [qr, setQr] = useState<Picture | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [editing, setEditing] = useState<Picture | null>(null);
   const [editAlbum, setEditAlbum] = useState('none');
@@ -514,6 +517,11 @@ export function Gallery({ all = false }: { all?: boolean }) {
             <SelectItem value="url">直链</SelectItem>
             <SelectItem value="markdown">Markdown</SelectItem>
             <SelectItem value="html">HTML</SelectItem>
+            <SelectItem value="bbcode">BBCode</SelectItem>
+            <SelectItem value="markdown-thumbnail">
+              Markdown 缩略图链接
+            </SelectItem>
+            <SelectItem value="html-thumbnail">HTML 缩略图链接</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -646,6 +654,15 @@ export function Gallery({ all = false }: { all?: boolean }) {
                     <Copy />
                     复制
                   </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={!item.is_public || !!item.deleted_at}
+                    onClick={() => setQr(item)}
+                    aria-label={`分享 ${item.original_name} 二维码`}
+                  >
+                    <QrCode />
+                    二维码
+                  </Button>
                   {item.user_id === me.data?.user.id && !item.deleted_at && (
                     <Button
                       variant="ghost"
@@ -680,6 +697,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
           setSelected([]);
         }}
       />
+      <ShareQr image={qr} onClose={() => setQr(null)} />
       <Dialog
         open={!!editing}
         onOpenChange={(open) => {

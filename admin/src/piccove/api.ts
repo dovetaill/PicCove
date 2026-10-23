@@ -90,9 +90,22 @@ export function size(bytes: number) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }
 export function imageLink(image: Picture, format: string): string {
-  if (format === 'markdown')
-    return `![${image.original_name.replace(/[\r\n]/g, ' ').replace(/[\\[\]]/g, '\\$&')}](${image.url})`;
-  if (format === 'html') {
+  if (format === 'bbcode')
+    return `[img]${image.url.replace(/[\[\]]/g, (c) => (c === '[' ? '%5B' : '%5D'))}[/img]`;
+  if (format === 'markdown' || format === 'markdown-thumbnail') {
+    const alt = image.original_name
+      .replace(/[\r\n]/g, ' ')
+      .replace(/[\\[\]]/g, '\\$&');
+    const url = (value: string) =>
+      value.replace(/[\s()\\<>]/g, (c) =>
+        encodeURIComponent(c).replace(/\(/g, '%28').replace(/\)/g, '%29'),
+      );
+    const preview = `![${alt}](${url(format === 'markdown-thumbnail' ? image.thumbnail_url || image.url : image.url)})`;
+    return format === 'markdown-thumbnail'
+      ? `[${preview}](${url(image.url)})`
+      : preview;
+  }
+  if (format === 'html' || format === 'html-thumbnail') {
     const escape = (value: string) =>
       value.replace(
         /[&<>"']/g,
@@ -105,7 +118,10 @@ export function imageLink(image: Picture, format: string): string {
             "'": '&#39;',
           })[char]!,
       );
-    return `<img src="${escape(image.url)}" alt="${escape(image.original_name)}" />`;
+    const img = `<img src="${escape(format === 'html-thumbnail' ? image.thumbnail_url || image.url : image.url)}" alt="${escape(image.original_name)}" />`;
+    return format === 'html-thumbnail'
+      ? `<a href="${escape(image.url)}">${img}</a>`
+      : img;
   }
   return image.url;
 }
