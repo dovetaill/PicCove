@@ -108,27 +108,31 @@ def build(output, work_parent, tag=None):
         name = f'piccove-v{value}-linux-x86_64'
         stage = work / name
         (stage / 'bin').mkdir(parents=True)
-        shutil.copy2(work / 'target' / TARGET / 'release/piccove-api', stage / 'bin/piccove-api')
+        for binary in ['piccove-api', 'piccovectl']:
+            shutil.copy2(work / 'target' / TARGET / 'release' / binary, stage / 'bin' / binary)
         shutil.copytree(web / 'dist', stage / 'web')
         shutil.copytree(ROOT / 'deploy', stage / 'deploy')
         shutil.copy2(ROOT / 'deploy/compose.yml', stage / 'compose.yml')
         shutil.copy2(ROOT / 'scripts/install-server.sh', stage / 'install.sh')
-        shutil.copy2(ROOT / 'scripts/configure.py', stage / 'configure.py')
         shutil.copy2(ROOT / 'piccove.sh', stage / 'piccove.sh')
-        (stage / 'scripts').mkdir()
-        shutil.copy2(ROOT / 'scripts/manage.py', stage / 'scripts/manage.py')
         shutil.copy2(ROOT / 'README.md', stage / 'README.md')
         shutil.copytree(ROOT / 'docs', stage / 'docs')
         commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
         dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT))
         require(not tag or not dirty, '正式 tag 构建要求工作区干净。')
-        manifest = {'version': value, 'target': TARGET, 'commit': commit, 'dirty': dirty}
+        manifest = {'version': value, 'target': TARGET, 'commit': commit, 'dirty': dirty,
+                    'files': {str(p.relative_to(stage)): hashlib.sha256(p.read_bytes()).hexdigest()
+                              for p in sorted(stage.rglob('*')) if p.is_file()}}
         (stage / 'release.json').write_text(json.dumps(manifest, indent=2) + '\n')
         archive = work / (name + '.tar.gz')
         with tarfile.open(archive, 'w:gz') as tar:
             tar.add(stage, arcname=name)
+        binary = work / 'piccovectl-linux-x86_64'
+        shutil.copy2(stage / 'bin/piccovectl', binary)
         sums = hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n'
+        sums += hashlib.sha256(binary.read_bytes()).hexdigest() + '  ' + binary.name + '\n'
         output.mkdir(parents=True)
+        shutil.copy2(binary, output / binary.name)
         shutil.copy2(archive, output / archive.name)
         (output / 'SHA256SUMS').write_text(sums)
         (output / 'release.json').write_text(json.dumps(manifest, indent=2) + '\n')

@@ -6,7 +6,7 @@
 - A 记录指向本机 `66.45.226.118`；原先的 `tu.imggg.com` 是错误域名，已更正。
 - 程序安装在 `/opt/piccove`，Compose 项目名 `piccove-tu`，仅监听 `127.0.0.1:18081`。
 - PostgreSQL、API、Web 已启动并通过健康检查；数据库和原图保存在该项目的独立 Docker 卷中。
-- 当前安装来自 `release-output/server/v0.1.0` 的本地构建包，含私有图片支持；不是已发布的 GitHub Release。不要回退到旧 `release-output/v0.1.0` 包。
+- 使用 GitHub Release 更新；实际版本记录在 `/opt/piccove/release.json`，禁止回退到不支持私有图片或二步验证的旧包。
 - GitHub Actions 仅构建 Linux 服务端和 Web，不构建 Android 或 Windows。
 
 ## 首次使用
@@ -34,7 +34,7 @@ bash piccove.sh health
 bash piccove.sh logs
 ```
 
-在新服务器安装时，需要 Docker Engine、Compose 和 Python 3.11+；发行包安装不需要 Rust 或 Node.js。在源码目录运行 `bash piccove.sh`，选择「1 安装」，默认目录 `/opt/piccove`、域名 `https://tu.jpggg.com`、端口 `18081`。需要提前准备发行包，并单独配置 DNS、Nginx 和证书；菜单不会自动安装系统工具或证书。
+新服务器安装需要 Docker Engine、Compose、Buildx、curl 和 sha256sum，无需 Python、Rust 或 Node.js。使用 [GitHub Release 一键安装命令](OPERATIONS.md)，指定 `--origin https://tu.jpggg.com`；DNS、Nginx 和证书仍需单独配置。安装后通过 Rust `piccovectl` 管理。
 
 备份、升级和发版说明见 [运维文档](OPERATIONS.md)。不要运行 `docker compose down -v`，该命令会删除数据库和原图。
 

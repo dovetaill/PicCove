@@ -18,7 +18,7 @@ def publish(directory, tag, repository, commit):
     if manifest['commit'] != commit or manifest['dirty'] or manifest['target'] != 'x86_64-unknown-linux-musl':
         raise ValueError('发行包来源校验失败')
     archive = 'piccove-' + tag + '-linux-x86_64.tar.gz'
-    expected = {archive, 'SHA256SUMS', 'release.json'}
+    expected = {archive, 'piccovectl-linux-x86_64', 'SHA256SUMS', 'release.json'}
     if {p.name for p in directory.iterdir()} != expected:
         raise ValueError('发行附件不完整')
     subprocess.run(['sha256sum', '-c', 'SHA256SUMS'], cwd=directory, check=True)

@@ -1,27 +1,40 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
-release_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-cd "$release_dir"
-if [[ ${1:-} == --help || ${1:-} == -h ]]; then
-    echo '在解压后的发行包内运行：bash install.sh --origin https://img.example.com --contact mailto:admin@example.com'
-    echo '本机试用：bash install.sh --origin http://127.0.0.1:8080'
-    echo '已有 .env：bash install.sh --resume（不重新生成密码）'
-    exit 0
-fi
-[[ -f compose.yml && -f bin/piccove-api ]] || { echo '请从完整发行包运行 install.sh。' >&2; exit 1; }
-command -v python3 >/dev/null || { echo '需要 Python 3.11+。' >&2; exit 1; }
-docker compose version >/dev/null
-if [[ ${1:-} == --resume ]]; then
-    [[ $# == 1 && -f .env ]] || { echo '--resume 需要现有 .env。' >&2; exit 1; }
-else
-    python3 -B configure.py "$@"
-fi
-project=$(docker compose config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')
-for container in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
-    owner=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$container")
-    [[ "$owner" == "$release_dir" ]] || { echo "项目 $project 属于其他安装目录，拒绝覆盖。" >&2; exit 1; }
+#!/bin/sh
+# Thin bootstrap only; installation and operations are implemented by Rust piccovectl.
+set -eu
+case ${1:-} in
+    -h|--help)
+        echo 'sh install-server.sh install --origin https://你的域名 --non-interactive'
+        echo 'sh install-server.sh update --non-interactive'
+        echo '可选：--version X.Y.Z；其他参数传给 piccovectl。需要 Docker Engine、Compose、Buildx、curl、sha256sum。'
+        exit 0 ;;
+    install|update|upgrade) ;;
+    *) echo '请指定 install 或 update。' >&2; exit 1 ;;
+esac
+[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || { echo '仅支持 Linux x86_64。' >&2; exit 1; }
+for tool in curl sha256sum docker; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "缺少 $tool。" >&2; exit 1; }
 done
-docker compose up -d --build --wait --wait-timeout 120
-printf '\n安装完成。管理员用户名：admin；请从当前 .env 安全读取初始密码。\n'
-printf '登录后修改密码，并移除 .env 中的 PICCOVE_ADMIN_PASSWORD 值，再执行 docker compose up -d。\n'
-printf '查看状态：docker compose ps；查看日志：docker compose logs --tail=100\n'
+docker compose version >/dev/null
+docker buildx version >/dev/null
+version=
+previous=
+for argument in "$@"; do
+    if [ "$previous" = --version ]; then version=$argument; fi
+    previous=$argument
+done
+base=https://github.com/dovetaill/PicCove/releases/latest/download
+if [ -n "$version" ]; then
+    version=${version#v}
+    # Do not interpolate arbitrary paths into the download URL.
+    printf '%s\n' "$version" | LC_ALL=C grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || { echo '版本必须为 X.Y.Z。' >&2; exit 1; }
+    base=https://github.com/dovetaill/PicCove/releases/download/v$version
+fi
+work=$(mktemp -d /var/tmp/piccove-bootstrap.XXXXXXXX)
+trap 'rm -rf -- "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+curl -fLsS --proto '=https' --proto-redir '=https' --retry 2 "$base/SHA256SUMS" -o "$work/SHA256SUMS"
+curl -fLsS --proto '=https' --proto-redir '=https' --retry 2 "$base/piccovectl-linux-x86_64" -o "$work/piccovectl-linux-x86_64"
+(cd "$work" && awk '$2 == "piccovectl-linux-x86_64" {print; n++} END {if(n != 1) exit 1}' SHA256SUMS > CLI.SHA256SUMS && sha256sum -c CLI.SHA256SUMS)
+chmod 700 "$work/piccovectl-linux-x86_64"
+"$work/piccovectl-linux-x86_64" "$@"

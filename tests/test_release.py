@@ -16,7 +16,7 @@ def load(name):
     spec.loader.exec_module(module)
     return module
 
-release, configure = load('release'), load('configure')
+release = load('release')
 sys.modules['release'] = release
 publish = load('publish')
 
@@ -38,31 +38,12 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release.set_version('v1.2.3', root)
 
-    def test_config_exclusive_and_private(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            password = configure.configure(root, 'http://127.0.0.1:8080', 8080, 'test-cove', '')
-            before = (root / '.env').read_bytes()
-            self.assertGreaterEqual(len(password), 24)
-            self.assertEqual((root / '.env').stat().st_mode & 0o777, 0o600)
-            with self.assertRaises(FileExistsError):
-                configure.configure(root, 'https://img.example.com', 8080, 'test-cove', '')
-            self.assertEqual(before, (root / '.env').read_bytes())
-
-    def test_reject_bad_origins_and_injection(self):
-        with tempfile.TemporaryDirectory() as folder:
-            for origin in ['https://example.com/', 'http://example.com', 'https://user:pass@example.com',
-                           'https://example.com\nKEY=value', 'https://example.com/$test',
-                           'https://example.com:bad', 'https://example.com:99999']:
-                with self.assertRaises(ValueError):
-                    configure.configure(Path(folder), origin, 8080, 'test', '')
-            self.assertFalse((Path(folder) / '.env').exists())
-
     def test_publish_checks_download_before_publishing(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             tag = 'v' + release.version()
             (root / ('piccove-' + tag + '-linux-x86_64.tar.gz')).write_bytes(b'archive')
+            (root / 'piccovectl-linux-x86_64').write_bytes(b'cli')
             (root / 'SHA256SUMS').write_text('test fixture')
             (root / 'release.json').write_text(json.dumps({
                 'commit': 'abc', 'dirty': False, 'target': 'x86_64-unknown-linux-musl'}))
