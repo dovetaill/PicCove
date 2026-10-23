@@ -1,3 +1,5 @@
+mod web;
+
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -76,8 +78,20 @@ impl Args {
         }
         ensure!(
             [
-                "", "help", "menu", "install", "update", "upgrade", "status", "start", "stop",
-                "restart", "logs", "health", "backup"
+                "",
+                "help",
+                "menu",
+                "install",
+                "update",
+                "upgrade",
+                "status",
+                "start",
+                "stop",
+                "restart",
+                "logs",
+                "health",
+                "backup",
+                "web-manager"
             ]
             .contains(&result.action.as_str()),
             "未知操作"
@@ -1049,6 +1063,9 @@ fn backup(rt: &Runtime, args: &Args) -> Result<()> {
     ensure!(!dest.exists(), "备份目录已存在");
     let active = rt.compose(root, &["ps", "--status", "running", "--services"], None)?;
     ensure!(active.lines().any(|s| s == "postgres"), "数据库未运行");
+    // shortcut: backup covers /data/uploads only; extend archive and restore together before supporting external disks.
+    let external = rt.compose(root, &["exec", "-T", "postgres", "psql", "-U", "piccove", "-d", "piccove", "-Atc", "SELECT count(*) FROM images WHERE to_jsonb(images)->>'storage_root' IS NOT NULL AND to_jsonb(images)->>'storage_root' <> '/data/uploads' AND to_jsonb(images)->>'storage_root' NOT LIKE '/data/uploads/%'"], None)?;
+    ensure!(external.trim() == "0", "存在自定义目录图片；默认备份仅覆盖 /data/uploads。请单独备份数据库及全部图片目录，未生成不完整备份");
     let running: Vec<_> = ["api", "web"]
         .into_iter()
         .filter(|s| active.lines().any(|v| v == *s))
@@ -1134,8 +1151,11 @@ fn backup(rt: &Runtime, args: &Args) -> Result<()> {
 }
 fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
     if ["help", ""].contains(&args.action.as_str()) {
-        println!("piccovectl install --origin https://域名 [--non-interactive]\npiccovectl update [--version X.Y.Z | --archive 包路径] [--non-interactive]\npiccovectl status|start|stop|restart|logs|health\npiccovectl backup [--backup 新目录]\npiccovectl menu\n通用参数：--directory /opt/piccove。仅 Linux x86_64；依赖 Docker Compose。安装／升级不依赖 Python 或 Rust 工具链。升级成功不保留历史程序版本、不自动备份。");
+        println!("piccovectl install --origin https://域名 [--non-interactive]\npiccovectl update [--version X.Y.Z | --archive 包路径] [--non-interactive]\npiccovectl status|start|stop|restart|logs|health\npiccovectl backup [--backup 新目录]\npiccovectl web-manager --directory /opt/piccove\npiccovectl menu\n通用参数：--directory /opt/piccove。仅 Linux x86_64；依赖 Docker Compose。安装／升级不依赖 Python 或 Rust 工具链。升级成功不保留历史程序版本、不自动备份。");
         return Ok(());
+    }
+    if args.action == "web-manager" {
+        return web::run(rt, &args.directory);
     }
     if args.action == "menu" {
         return menu(rt, &args.directory);

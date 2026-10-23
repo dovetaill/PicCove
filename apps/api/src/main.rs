@@ -1,4 +1,8 @@
+mod file_jobs;
+mod management;
 mod security;
+mod storage;
+mod thumbnails;
 
 use anyhow::{bail, Context};
 use argon2::{
@@ -31,6 +35,9 @@ type ApiResult<T> = Result<T, ApiError>;
 struct AppState {
     pool: PgPool,
     upload_dir: PathBuf,
+    storage_roots: Vec<PathBuf>,
+    import_dir: Option<storage::Location>,
+    thumbnails: Arc<Semaphore>,
     public_base_url: String,
     origin: String,
     contact_url: Option<String>,
@@ -94,6 +101,8 @@ struct ImageRow {
     original_name: String,
     #[serde(skip_serializing)]
     storage_key: String,
+    #[serde(skip_serializing)]
+    storage_root: Option<String>,
     content_type: String,
     size_bytes: i64,
     width: i32,
@@ -106,9 +115,19 @@ fn image_dto(row: ImageRow, state: &AppState) -> serde_json::Value {
     let url = format!(
         "{}/i/{}",
         state.public_base_url.trim_end_matches('/'),
-        row.id
+        if row.storage_key.contains('/') {
+            row.storage_key.clone()
+        } else {
+            row.id.to_string()
+        }
     );
     let mut result = serde_json::to_value(row).expect("serializable image");
+    result["thumbnail_url"] = format!(
+        "{}/api/v1/images/{}/thumbnail",
+        state.public_base_url.trim_end_matches('/'),
+        result["id"].as_str().unwrap()
+    )
+    .into();
     result["url"] = url.into();
     result
 }
@@ -475,6 +494,7 @@ fn validate_image(bytes: &[u8]) -> ApiResult<(&'static str, &'static str, u32, u
 #[derive(Deserialize)]
 struct UploadOptions {
     private: Option<bool>,
+    album_id: Option<Uuid>,
 }
 async fn upload_image(
     State(state): State<Arc<AppState>>,
@@ -512,22 +532,43 @@ async fn upload_image(
         upload = Some((name, bytes));
     }
     let (original_name, bytes) = upload.ok_or_else(|| bad("缺少图片"))?;
+    let row = store_image(
+        &state,
+        user.id,
+        original_name,
+        bytes,
+        !options.private.unwrap_or(false),
+        options.album_id,
+        Uuid::new_v4(),
+        None,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(image_dto(row, &state))))
+}
+// Callers hold uploads so imports, migration, quota accounting and deletion cannot race.
+async fn store_image(
+    state: &AppState,
+    user_id: Uuid,
+    original_name: String,
+    bytes: Bytes,
+    is_public: bool,
+    album_id: Option<Uuid>,
+    id: Uuid,
+    import_key: Option<String>,
+) -> ApiResult<ImageRow> {
     let check_bytes = bytes.clone();
     let (extension, mime, width, height) =
         tokio::task::spawn_blocking(move || validate_image(&check_bytes))
             .await
             .map_err(internal)??;
-    if fs2::available_space(&state.upload_dir).map_err(internal)?
-        < DISK_RESERVE + bytes.len() as u64
-    {
-        return Err(ApiError(
-            StatusCode::INSUFFICIENT_STORAGE,
-            "存储空间不足，已暂停上传".into(),
-        ));
+    let location = storage::current(state).await?;
+    let dir = location.open()?;
+    if dir.available().map_err(storage::io_error)? < DISK_RESERVE + bytes.len() as u64 {
+        return Err(bad("存储空间不足，已暂停上传"));
     }
     let mut tx = state.pool.begin().await.map_err(internal)?;
     let current: User = sqlx::query_as("SELECT * FROM users WHERE id=$1 FOR UPDATE")
-        .bind(user.id)
+        .bind(user_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(internal)?;
@@ -537,34 +578,35 @@ async fn upload_image(
     let used: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM images WHERE user_id=$1",
     )
-    .bind(user.id)
+    .bind(user_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(internal)?;
     if bytes.len() as i64 > current.quota_bytes.saturating_sub(used) {
         return Err(bad("存储配额不足，请联系管理员"));
     }
-    let id = Uuid::new_v4();
-    let storage_key = format!("{id}.{extension}");
-    let path = state.upload_dir.join(&storage_key);
+    let storage_key = format!("{}/{id}.{extension}", Utc::now().format("%Y/%m/%d"));
+    if let Some(album_id) = album_id {
+        let valid: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM albums WHERE id=$1 AND user_id=$2)")
+                .bind(album_id)
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(internal)?;
+        if !valid {
+            return Err(bad("相册不属于所选用户"));
+        }
+    }
     // Keep a pending row until the file is durable; interrupted uploads remain identifiable for cleanup.
-    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9) RETURNING *")
-        .bind(id).bind(user.id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(!options.private.unwrap_or(false)).fetch_one(&mut *tx).await.map_err(internal)?;
+    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public,storage_root,album_id,import_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10,$11,$12) RETURNING *")
+        .bind(id).bind(user_id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(is_public).bind(&location.path).bind(album_id).bind(import_key).fetch_one(&mut *tx).await.map_err(internal)?;
     tx.commit().await.map_err(internal)?;
-    use tokio::io::AsyncWriteExt;
-    let write_result = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .await?;
-        file.write_all(&bytes).await?;
-        file.sync_all().await
-    }
-    .await;
-    if let Err(error) = write_result {
-        return Err(internal(error));
-    }
+    let key = row.storage_key.clone();
+    tokio::task::spawn_blocking(move || dir.write_new(&key, &bytes))
+        .await
+        .map_err(internal)?
+        .map_err(storage::io_error)?;
     sqlx::query("UPDATE images SET deleted_at=NULL WHERE id=$1")
         .bind(id)
         .execute(&state.pool)
@@ -572,7 +614,7 @@ async fn upload_image(
         .map_err(internal)?;
     let mut row = row;
     row.deleted_at = None;
-    Ok((StatusCode::CREATED, Json(image_dto(row, &state))))
+    Ok(row)
 }
 #[derive(Deserialize)]
 struct ImageUpdate {
@@ -623,11 +665,17 @@ async fn update_visibility(
     Ok(StatusCode::NO_CONTENT)
 }
 async fn remove_file_record(state: &AppState, row: &ImageRow) -> ApiResult<()> {
-    match tokio::fs::remove_file(state.upload_dir.join(&row.storage_key)).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(internal(e)),
-    }
+    file_jobs::remove_copies(state, row).await?;
+    let location = storage::image_location(state, row).await?;
+    let key = row.storage_key.clone();
+    let thumb = thumbnails::key(row.id);
+    tokio::task::spawn_blocking(move || {
+        let dir = location.open()?;
+        dir.remove(&key).map_err(storage::io_error)?;
+        dir.remove(&thumb).map_err(storage::io_error)
+    })
+    .await
+    .map_err(internal)??;
     sqlx::query("DELETE FROM images WHERE id=$1 AND deleted_at IS NOT NULL")
         .bind(row.id)
         .execute(&state.pool)
@@ -814,17 +862,41 @@ async fn update_user(
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
+fn image_id(key: &str) -> Option<Uuid> {
+    if !key.contains('/') {
+        return key.parse().ok();
+    }
+    let parts: Vec<_> = key.split('/').collect();
+    if parts.len() != 4
+        || parts[..3]
+            .iter()
+            .zip([4, 2, 2])
+            .any(|(p, len)| p.len() != len || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    let (id, ext) = parts[3].rsplit_once('.')?;
+    if !["jpg", "png", "webp", "gif"].contains(&ext) {
+        return None;
+    }
+    id.parse().ok()
+}
 async fn serve_image(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(key): Path<String>,
 ) -> ApiResult<Response> {
+    let _guard = state.uploads.lock().await;
+    let id = image_id(&key).ok_or_else(missing)?;
     let row: ImageRow = sqlx::query_as("SELECT * FROM images WHERE id=$1 AND deleted_at IS NULL")
         .bind(id)
         .fetch_optional(&state.pool)
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;
+    if key.contains('/') && key != row.storage_key {
+        return Err(missing());
+    }
     if !row.is_public {
         let user = authenticate(&headers, &state)
             .await
@@ -833,15 +905,7 @@ async fn serve_image(
             return Err(missing());
         }
     }
-    let bytes = tokio::fs::read(state.upload_dir.join(row.storage_key))
-        .await
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                missing()
-            } else {
-                internal(e)
-            }
-        })?;
+    let bytes = storage::read_image(&state, &row).await?;
     Ok((
         [
             (
@@ -888,7 +952,31 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/albums/{id}", axum::routing::delete(delete_album))
         .route("/api/v1/admin/users", get(users).post(create_user))
         .route("/api/v1/admin/users/{id}", patch(update_user))
-        .route("/i/{id}", get(serve_image))
+        .route("/i/{*key}", get(serve_image))
+        .route(
+            "/api/v1/admin/storage",
+            get(management::storage).patch(management::set_storage),
+        )
+        .route(
+            "/api/v1/storage-locations",
+            get(storage::list).post(storage::add),
+        )
+        .route(
+            "/api/v1/storage-locations/{id}/default",
+            post(storage::select),
+        )
+        .route("/api/v1/file-jobs", get(file_jobs::list))
+        .route("/api/v1/file-jobs/migrate", post(file_jobs::migrate))
+        .route("/api/v1/file-jobs/{id}/retry", post(file_jobs::retry))
+        .route("/api/v1/file-jobs/{id}/cleanup", post(file_jobs::cleanup))
+        .route("/api/v1/file-jobs/{id}", get(file_jobs::details))
+        .route("/api/v1/import-candidates", get(file_jobs::candidates))
+        .route("/api/v1/import-albums/{id}", get(file_jobs::albums))
+        .route("/api/v1/file-jobs/import", post(file_jobs::import))
+        .route("/api/v1/images/{id}/thumbnail", get(thumbnails::serve))
+        .route("/api/v1/admin/system", get(management::system))
+        .route("/api/v1/admin/system/check", post(management::check))
+        .route("/api/v1/admin/system/{action}", post(management::action))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -972,24 +1060,63 @@ async fn main() -> anyhow::Result<()> {
     {
         bail!("CONTACT_URL must use https:// or mailto:");
     }
-    let upload_dir = PathBuf::from(env::var("UPLOAD_DIR").context("UPLOAD_DIR is required")?);
-    tokio::fs::create_dir_all(&upload_dir).await?;
-    // One API process owns local storage; this also prevents startup cleanup racing an active upload.
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(upload_dir.join(".piccove.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("another PicCove process owns UPLOAD_DIR")?;
+    let mut upload_dir = PathBuf::from(env::var("UPLOAD_DIR").context("UPLOAD_DIR is required")?);
+    if !upload_dir.is_absolute() {
+        upload_dir = env::current_dir()?.join(upload_dir);
+    }
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&database_url)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
+    let registered: Option<String> =
+        sqlx::query_scalar("SELECT identity FROM storage_locations WHERE path=$1")
+            .bind(upload_dir.to_str().context("UTF-8 UPLOAD_DIR required")?)
+            .fetch_optional(&pool)
+            .await?;
+    if registered.is_none() {
+        tokio::fs::create_dir_all(&upload_dir).await?;
+    }
+    let upload_directory = storage::Directory::open(&upload_dir)?;
+    if registered
+        .is_some_and(|identity| upload_directory.identity().ok().as_ref() != Some(&identity))
+    {
+        bail!("UPLOAD_DIR identity changed; restore the original mount before starting");
+    }
+    let storage_roots = env::var("PICCOVE_STORAGE_ROOTS")
+        .map(|s| env::split_paths(&s).collect::<Vec<_>>())
+        .unwrap_or_else(|_| vec![upload_dir.clone()]);
+    if storage_roots.iter().any(|p| {
+        !p.is_absolute()
+            || p.parent().is_none()
+            || p.components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+    }) {
+        bail!("storage roots must be bounded absolute directories");
+    }
+    let import_dir = env::var("PICCOVE_IMPORT_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|path| -> anyhow::Result<storage::Location> {
+            let dir = storage::Directory::open(std::path::Path::new(&path))?;
+            Ok(storage::Location {
+                id: Uuid::nil(),
+                path,
+                identity: dir.identity()?,
+            })
+        })
+        .transpose()?;
+    // One API process owns local storage; this also prevents startup cleanup racing an active upload.
+    let lock = upload_directory
+        .lock()
+        .context("another PicCove process owns UPLOAD_DIR or lock is invalid")?;
     let security = security::Security::new(&origin)?;
     let state = Arc::new(AppState {
         pool,
         upload_dir,
+        storage_roots,
+        import_dir,
+        thumbnails: Arc::new(Semaphore::new(2)),
         public_base_url,
         origin,
         contact_url,
@@ -997,7 +1124,10 @@ async fn main() -> anyhow::Result<()> {
         passwords: Arc::new(Semaphore::new(4)),
         security,
     });
+    storage::initialize(&state).await?;
     bootstrap(&state).await?;
+    let (stop_jobs, stopped) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(file_jobs::worker(state.clone(), stopped));
     let listener = tokio::net::TcpListener::bind(
         env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".into()),
     )
@@ -1011,12 +1141,28 @@ async fn main() -> anyhow::Result<()> {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await?;
+    let _ = stop_jobs.send(true);
+    worker.await??;
     drop(lock);
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dated_image_links_and_legacy_ids() {
+        let id = Uuid::new_v4();
+        assert_eq!(image_id(&id.to_string()), Some(id));
+        assert_eq!(image_id(&format!("2026/10/23/{id}.png")), Some(id));
+        for key in [
+            format!("../10/23/{id}.png"),
+            format!("2026/10/{id}.png"),
+            format!("2026/10/23/{id}.html"),
+            format!("2026/10/23/{id}.png/extra"),
+        ] {
+            assert!(image_id(&key).is_none());
+        }
+    }
     #[test]
     fn credentials_and_limits() {
         assert!(validate_credentials("alice", "long-password-123").is_ok());

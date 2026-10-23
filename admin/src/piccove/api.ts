@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+
 export type User = {
   id: string;
   username: string;
@@ -16,6 +17,7 @@ export type Picture = {
   width: number;
   height: number;
   url: string;
+  thumbnail_url: string;
   deleted_at: string | null;
   is_public: boolean;
 };

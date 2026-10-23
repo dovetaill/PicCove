@@ -49,6 +49,7 @@ import {
 } from './api';
 import { Brand } from './public';
 import { AccountSecurity } from './security';
+import { SystemSettings } from './system';
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : '操作失败';
@@ -75,6 +76,7 @@ function useAction() {
 }
 export function Workspace() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const me = useMe();
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -102,7 +104,9 @@ export function Workspace() {
     }
   }
   return (
-    <div className="demo1 sidebar-fixed header-fixed cove-workspace">
+    <div
+      className={`demo1 sidebar-fixed header-fixed cove-workspace${collapsed ? ' cove-collapsed' : ''}`}
+    >
       <aside
         id="workspace-navigation"
         className={`sidebar cove-sidebar${menuOpen ? ' is-open' : ''}`}
@@ -140,7 +144,7 @@ export function Workspace() {
               </NavLink>
               <NavLink to="/app/admin/settings">
                 <Settings2 />
-                注册设置
+                系统设置
               </NavLink>
             </>
           )}
@@ -159,6 +163,16 @@ export function Workspace() {
       </aside>
       <div className="wrapper cove-workbody">
         <header className="header cove-workheader">
+          <Button
+            className="cove-collapse-button"
+            variant="ghost"
+            aria-label={collapsed ? '展开导航' : '收起导航'}
+            aria-expanded={!collapsed}
+            aria-controls="workspace-navigation"
+            onClick={() => setCollapsed(!collapsed)}
+          >
+            <Menu />
+          </Button>
           <Button
             className="cove-menu-button"
             variant="ghost"
@@ -254,6 +268,10 @@ export function Gallery({ all = false }: { all?: boolean }) {
   const [moveTo, setMoveTo] = useState('none');
   const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
+  const [queue, setQueue] = useState<
+    { file: File; status: string; error?: string }[]
+  >([]);
   const uploading = useRef(false);
   const action = useAction();
   const me = useMe();
@@ -274,23 +292,33 @@ export function Gallery({ all = false }: { all?: boolean }) {
   async function upload(files: FileList | File[]) {
     if (uploading.current || action.busy || !files.length) return;
     uploading.current = true;
+    const batch = Array.from(files);
+    setQueue(batch.map((file) => ({ file, status: '等待' })));
     let count = 0;
     await action.run(async () => {
       const errors: string[] = [];
-      for (const file of Array.from(files)) {
+      for (const [index, file] of batch.entries()) {
+        const update = (status: string, error?: string) =>
+          setQueue((items) =>
+            items.map((item, i) =>
+              i === index ? { ...item, status, error } : item,
+            ),
+          );
+        update('上传中');
         try {
           if (!file.size || file.size > 10 * 1024 * 1024)
             throw new Error('单张图片须为 1 字节至 10 MiB');
           const body = new FormData();
           body.append('file', file);
-          const result = await api<Picture>('/images', 'POST', body);
+          await api<Picture>(
+            `/images${album !== 'all' ? `?album_id=${album}` : ''}`,
+            'POST',
+            body,
+          );
           count++;
-          if (album !== 'all')
-            await api(`/images/${result.id}`, 'PATCH', {
-              original_name: result.original_name,
-              album_id: album,
-            });
+          update('完成');
         } catch (error) {
+          update('失败', message(error));
           errors.push(`${file.name}：${message(error)}`);
         }
       }
@@ -301,6 +329,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
     }, '图片上传完成');
     uploading.current = false;
     if (input.current) input.current.value = '';
+    if (folderInput.current) folderInput.current.value = '';
     await client.invalidateQueries({ queryKey: ['images'] });
   }
   async function copy(pictures: Picture[]) {
@@ -340,6 +369,14 @@ export function Gallery({ all = false }: { all?: boolean }) {
       {!all && (
         <div
           className={`cove-drop ${dragging ? 'is-dragging' : ''}`}
+          tabIndex={0}
+          aria-label="上传区域，可粘贴剪贴板图片"
+          onPaste={(event) => {
+            if (event.clipboardData.files.length) {
+              event.preventDefault();
+              void upload(event.clipboardData.files);
+            }
+          }}
           onDragOver={(event) => {
             event.preventDefault();
             setDragging(true);
@@ -370,9 +407,76 @@ export function Gallery({ all = false }: { all?: boolean }) {
               if (event.target.files) void upload(event.target.files);
             }}
           />
-          <small>JPEG / PNG / WebP / GIF · 单张最大 10 MiB · 原图保存</small>
+          <Button
+            variant="outline"
+            disabled={action.busy}
+            onClick={() => folderInput.current?.click()}
+          >
+            选择文件夹
+          </Button>
+          <input
+            ref={folderInput}
+            hidden
+            type="file"
+            multiple
+            {...{ webkitdirectory: '' }}
+            onChange={(event) => {
+              if (event.target.files)
+                void upload(
+                  Array.from(event.target.files).filter((file) =>
+                    /\.(jpe?g|png|webp|gif)$/i.test(file.name),
+                  ),
+                );
+            }}
+          />
+          <small>
+            支持粘贴图片、文件夹上传；JPEG / PNG / WebP / GIF · 单张最大 10 MiB
+            · 原图保存
+          </small>
           <small>持有链接即可访问；管理员可查看和删除图片。</small>
         </div>
+      )}
+      {!all && queue.length > 0 && (
+        <section aria-label="上传队列" aria-live="polite">
+          <p>
+            已处理{' '}
+            {
+              queue.filter((item) => ['完成', '失败'].includes(item.status))
+                .length
+            }{' '}
+            / {queue.length}
+          </p>
+          <progress
+            max={queue.length}
+            value={
+              queue.filter((item) => ['完成', '失败'].includes(item.status))
+                .length
+            }
+          />
+          <ul>
+            {queue.map((item, index) => (
+              <li key={index}>
+                {item.file.webkitRelativePath || item.file.name}：{item.status}
+                {item.error && ` — ${item.error}`}
+              </li>
+            ))}
+          </ul>
+          <Button
+            variant="outline"
+            disabled={
+              action.busy || !queue.some((item) => item.status === '失败')
+            }
+            onClick={() =>
+              void upload(
+                queue
+                  .filter((item) => item.status === '失败')
+                  .map((item) => item.file),
+              )
+            }
+          >
+            重试失败项
+          </Button>
+        </section>
       )}
       <div className="cove-toolbar">
         <div>
@@ -502,7 +606,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
                     <span>待清理 · 请重试删除</span>
                   ) : (
                     <img
-                      src={item.url}
+                      src={item.thumbnail_url || item.url}
                       alt={item.original_name}
                       loading="lazy"
                     />
@@ -828,10 +932,7 @@ export function RegistrationSettings() {
   const action = useAction();
   return (
     <>
-      <Heading
-        title="注册设置"
-        description="控制新用户是否可以自行创建账号。"
-      />
+      <Heading title="系统设置" description="管理注册、图片存储及系统版本。" />
       <Card>
         <CardContent>
           <div className="cove-setting">
@@ -861,6 +962,7 @@ export function RegistrationSettings() {
           )}
         </CardContent>
       </Card>
+      <SystemSettings />
     </>
   );
 }

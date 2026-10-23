@@ -5,6 +5,8 @@ Uses only Python's standard library; creates and deletes test accounts/images.
 import http.cookiejar
 import json
 import os
+import re
+from urllib.parse import urlsplit
 import struct
 import urllib.error
 import urllib.request
@@ -65,6 +67,15 @@ for name in ['alice', 'bobby']:
 a = login(alice, 'alice')
 b = login(bob, 'bobby')
 request(alice, '/api/v1/admin/users', expected=403)
+for endpoint in ['/admin/storage', '/admin/system']:
+    request(alice, '/api/v1' + endpoint, expected=403)
+    request(anonymous, '/api/v1' + endpoint, expected=401)
+request(alice, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/data/uploads'}, 403)
+request(alice, '/api/v1/admin/system/restart', 'POST', expected=403)
+request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '../bad'}, 400)
+request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/does-not-exist-piccove-test'}, 400)
+assert request(admin, '/api/v1/admin/system')['version']
+original_storage = request(admin, '/api/v1/admin/storage')['upload_dir']
 request(alice, '/api/v1/images?all=true', expected=403)
 request(alice, '/api/v1/settings', 'PATCH', {'registration_open': True}, 403)
 request(admin, '/api/v1/settings', 'PATCH', {'registration_open': True}, 204)
@@ -80,12 +91,17 @@ image = upload(alice, pixels)
 image_path = '/api/v1/images/' + image['id']
 public_path = '/i/' + image['id']
 assert request(anonymous, public_path, raw=True) == pixels
+dated_path = urlsplit(image['url']).path
+assert re.fullmatch(r'/i/\d{4}/\d{2}/\d{2}/[0-9a-f-]+\.png', dated_path)
+assert request(anonymous, dated_path, raw=True) == pixels
+request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/data'}, 400)
 assert image['is_public'] is True
 assert request(anonymous, '/api/v1/settings')['private_images'] is True
 private = upload(alice, png(), private=True)
 assert private['is_public'] is False
 private_path = '/i/' + private['id']
 visibility_path = '/api/v1/images/' + private['id'] + '/visibility'
+request(anonymous, urlsplit(private['url']).path, expected=404)
 request(anonymous, private_path, expected=404)
 request(bob, private_path, expected=404)
 assert request(alice, private_path, raw=True) == request(admin, private_path, raw=True)

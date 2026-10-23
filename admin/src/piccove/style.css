@@ -861,3 +861,27 @@ td small {
     background: var(--background);
   }
 }
+
+.cove-collapse-button {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .cove-collapse-button {
+    display: inline-flex;
+  }
+  .cove-workspace.cove-collapsed {
+    --sidebar-width: 0px;
+  }
+  .cove-collapsed .cove-sidebar {
+    display: none;
+  }
+}
+.cove-system-settings {
+  display: grid;
+  gap: 24px;
+  margin-top: 24px;
+}
+.cove-system-settings form {
+  display: grid;
+  gap: 12px;
+}

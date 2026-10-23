@@ -26,8 +26,11 @@ services:
       CORS_ORIGIN: ${PICCOVE_ORIGIN:?Run install.sh first}
       PUBLIC_BASE_URL: ${PICCOVE_ORIGIN}
       CONTACT_URL: ${CONTACT_URL:-}
+      PICCOVE_STORAGE_ROOTS: ${PICCOVE_STORAGE_ROOTS:-/data/uploads}
+      PICCOVE_IMPORT_DIR: ${PICCOVE_IMPORT_DIR:-}
     volumes:
       - images:/data
+      - control:/run/piccove:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,3 +60,4 @@ services:
 volumes:
   database:
   images:
+  control:

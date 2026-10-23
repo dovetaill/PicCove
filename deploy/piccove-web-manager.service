@@ -1,0 +1,17 @@
+[Unit]
+Description=PicCove Web upgrade and restart manager
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/opt/piccove/bin/piccovectl web-manager --directory /opt/piccove
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
