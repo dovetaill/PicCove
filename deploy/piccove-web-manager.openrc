@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+description="PicCove Web upgrade and restart manager"
+supervisor=supervise-daemon
+command=/opt/piccove/bin/piccovectl
+command_args="web-manager --directory /opt/piccove"
+command_user=root:root
+respawn_delay=10
+respawn_max=0
+retry="TERM/30/KILL/5"
+stopgroup=yes
+output_logger="logger -t $RC_SVCNAME"
+error_logger="logger -t $RC_SVCNAME"
+
+depend() {
+    need docker
+}

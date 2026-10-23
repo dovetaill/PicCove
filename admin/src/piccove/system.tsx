@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { api } from './api';
@@ -38,7 +39,7 @@ export function SystemSettings() {
   function operate(action: 'update' | 'restart') {
     const prompt =
       action === 'update'
-        ? '升级到最新稳定版本并重启？期间网站会短暂不可用；不自动备份，升级失败不自动回退。请确认已按需备份。'
+        ? '确认升级到最新稳定版本并重启？网站会短暂不可用。升级不会自动备份，失败也不会自动回退，请先备份需要保留的数据。'
         : '重启网站服务？期间网站会短暂不可用。';
     if (!window.confirm(prompt)) return;
     void run(
@@ -48,15 +49,37 @@ export function SystemSettings() {
   }
   const running = system.data?.manager?.state === 'running';
   return (
-    <div className="cove-system-settings">
+    <>
       <StorageSettings />
-      <Card>
+      <Card id="settings-system" className="cove-settings-card">
         <CardContent>
-          <h2>版本与升级</h2>
-          <p>当前运行版本：{system.data?.version || '读取中…'}</p>
+          <div className="cove-settings-title">
+            <h2>版本与服务</h2>
+            <p>检查新版本，或重启网站服务。</p>
+          </div>
+          <dl className="cove-storage-metrics">
+            <div>
+              <dt>当前版本</dt>
+              <dd>{system.data?.version || '读取中…'}</dd>
+            </div>
+            <div>
+              <dt>管理服务</dt>
+              <dd>
+                <Badge variant="outline">
+                  {system.isPending
+                    ? '连接中'
+                    : !system.data?.manager
+                      ? '未连接'
+                      : running
+                        ? '正在处理任务'
+                        : '已连接'}
+                </Badge>
+              </dd>
+            </div>
+          </dl>
           {system.isError && (
             <p role="status">
-              暂时无法连接服务，正在重试；若长时间未恢复，请检查宿主机管理日志。
+              暂时无法读取服务状态，正在重试。若刚执行了升级或重启，请稍后刷新。
             </p>
           )}
           {release && (
@@ -65,11 +88,14 @@ export function SystemSettings() {
               <a href={release.url} target="_blank" rel="noreferrer">
                 {release.latest}
               </a>{' '}
-              · {release.update_available ? '可升级' : '当前已是最新版本或更新'}
+              · {release.update_available ? '有新版本可用' : '无需升级'}
             </p>
           )}
           {system.data?.manager_error && (
-            <p role="status">{system.data.manager_error}</p>
+            <p role="status" className="cove-settings-note">
+              管理服务未连接，暂时无法升级或重启。请在服务器上检查 piccovectl
+              web-manager 的运行状态；配置方法见运维文档。
+            </p>
           )}
           {system.data?.manager?.message && (
             <p role="status">{system.data.manager.message}</p>
@@ -88,7 +114,7 @@ export function SystemSettings() {
                 )
               }
             >
-              检测最新版本
+              检查更新
             </Button>
             <Button
               disabled={
@@ -111,6 +137,6 @@ export function SystemSettings() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </>
   );
 }

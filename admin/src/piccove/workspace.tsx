@@ -115,7 +115,7 @@ export function Workspace() {
   }
   return (
     <div
-      className={`demo1 sidebar-fixed header-fixed cove-workspace${collapsed ? ' cove-collapsed' : ''}`}
+      className={`demo1 sidebar-fixed header-fixed cove-workspace${collapsed ? ' sidebar-collapse cove-collapsed' : ''}`}
     >
       <UploadProvider>
         <aside
@@ -131,32 +131,44 @@ export function Workspace() {
                 setMenuOpen(false);
             }}
           >
-            <NavLink to="/app" end>
+            <NavLink to="/app" end aria-label="图片库" title="图片库">
               <Images />
-              图片库
+              <span className="cove-nav-text">图片库</span>
             </NavLink>
-            <NavLink to="/app/albums">
+            <NavLink to="/app/albums" aria-label="相册" title="相册">
               <FolderHeart />
-              相册
+              <span className="cove-nav-text">相册</span>
             </NavLink>
-            <NavLink to="/app/account">
+            <NavLink to="/app/account" aria-label="账号设置" title="账号设置">
               <Settings2 />
-              账号设置
+              <span className="cove-nav-text">账号设置</span>
             </NavLink>
             {user.is_admin && (
               <>
                 <span className="cove-nav-label">管理控制台</span>
-                <NavLink to="/app/admin/users">
+                <NavLink
+                  to="/app/admin/users"
+                  aria-label="用户与配额"
+                  title="用户与配额"
+                >
                   <Users />
-                  用户与配额
+                  <span className="cove-nav-text">用户与配额</span>
                 </NavLink>
-                <NavLink to="/app/admin/images">
+                <NavLink
+                  to="/app/admin/images"
+                  aria-label="全部图片"
+                  title="全部图片"
+                >
                   <ShieldCheck />
-                  全部图片
+                  <span className="cove-nav-text">全部图片</span>
                 </NavLink>
-                <NavLink to="/app/admin/settings">
+                <NavLink
+                  to="/app/admin/settings"
+                  aria-label="系统设置"
+                  title="系统设置"
+                >
                   <Settings2 />
-                  系统设置
+                  <span className="cove-nav-text">系统设置</span>
                 </NavLink>
               </>
             )}
@@ -170,7 +182,7 @@ export function Workspace() {
               max={Math.max(user.quota_bytes, 1)}
               value={Math.min(used_bytes, Math.max(user.quota_bytes, 1))}
             />
-            <p>Web 上传默认公开；安卓私有图片仅本人及管理员可见。</p>
+            <p>网页上传的图片默认公开；私有图片仅本人和管理员可见。</p>
           </div>
         </aside>
         <div className="wrapper cove-workbody">
@@ -1116,37 +1128,53 @@ export function RegistrationSettings() {
   const action = useAction();
   return (
     <>
-      <Heading title="系统设置" description="管理注册、图片存储及系统版本。" />
-      <Card>
-        <CardContent>
-          <div className="cove-setting">
-            <div>
-              <h2 id="registration-label">开放普通用户注册</h2>
-              <p>关闭后隐藏注册入口并拒绝注册请求，已有账号仍可正常使用。</p>
-            </div>
-            <Switch
-              aria-labelledby="registration-label"
-              checked={settings.data?.registration_open || false}
-              disabled={action.busy || !settings.data}
-              onCheckedChange={(value) =>
-                void action.run(
-                  () => api('/settings', 'PATCH', { registration_open: value }),
-                  value ? '已开放注册' : '已关闭注册',
-                )
-              }
-            />
-          </div>
-          <p className="cove-muted">
-            自助注册用户默认获得 1 GiB 容量。管理员始终可以手动创建账号。
-          </p>
-          {settings.isError && (
-            <p role="alert" className="cove-error">
-              注册设置加载失败，请刷新重试。
-            </p>
-          )}
-        </CardContent>
-      </Card>
-      <SystemSettings />
+      <Heading
+        title="系统设置"
+        description="管理用户注册、图片存储和服务更新。"
+      />
+      <div className="cove-settings-layout">
+        <nav className="cove-settings-nav" aria-label="设置分类">
+          <a href="#settings-registration">用户注册</a>
+          <a href="#settings-storage">存储位置</a>
+          <a href="#settings-migration">图片迁移</a>
+          <a href="#settings-import">批量导入</a>
+          <a href="#settings-jobs">任务记录</a>
+          <a href="#settings-system">版本与服务</a>
+        </nav>
+        <div className="cove-settings-content">
+          <Card id="settings-registration" className="cove-settings-card">
+            <CardContent>
+              <div className="cove-setting">
+                <div>
+                  <h2 id="registration-label">允许用户自行注册</h2>
+                  <p>关闭后将停止接受新用户注册，已有账号不受影响。</p>
+                </div>
+                <Switch
+                  aria-labelledby="registration-label"
+                  checked={settings.data?.registration_open || false}
+                  disabled={action.busy || !settings.data}
+                  onCheckedChange={(value) =>
+                    void action.run(
+                      () =>
+                        api('/settings', 'PATCH', { registration_open: value }),
+                      value ? '已开放注册' : '已关闭注册',
+                    )
+                  }
+                />
+              </div>
+              <p className="cove-muted">
+                自行注册的用户默认获得 1 GiB 存储空间。管理员仍可手动创建账号。
+              </p>
+              {settings.isError && (
+                <p role="alert" className="cove-error">
+                  注册设置加载失败，请刷新重试。
+                </p>
+              )}
+            </CardContent>
+          </Card>
+          <SystemSettings />
+        </div>
+      </div>
     </>
   );
 }

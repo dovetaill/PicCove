@@ -1,7 +1,9 @@
 import importlib.util
+import os
 from pathlib import Path
 import socket
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('smoke', Path(__file__).resolve().parents[1] / 'scripts/smoke.py')
 smoke = importlib.util.module_from_spec(spec)
@@ -24,3 +26,11 @@ class PortCleanupTests(unittest.TestCase):
                     self.assertEqual(client.recv(1), b'')
                 # The server actively closes, leaving a TIME_WAIT connection on Linux.
         smoke.check_port_released(port)
+
+
+class SmokeSafetyTests(unittest.TestCase):
+    def test_requires_disposable_host_before_creating_resources(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(smoke.tempfile, 'TemporaryDirectory') as temporary:
+            with self.assertRaisesRegex(RuntimeError, 'PICCOVE_SMOKE_DISPOSABLE_HOST'):
+                smoke.smoke(Path('/unused-bundle'), Path('/unused-work'))
+            temporary.assert_not_called()

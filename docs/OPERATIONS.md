@@ -103,21 +103,35 @@ services:
 
 Web 升级/重启通过宿主机 `piccovectl web-manager` 执行。API 只读挂载独立控制卷 `/run/piccove`，通过 Unix socket 提交固定的状态查询、升级、重启操作，不接收 shell、路径或任意命令。只有已登录管理员且 Origin 校验通过才能提交操作。管理进程从实际 API 容器读取 UID/GID，仅给新建 socket 配置对应组权限，不修改图片目录权限。
 
-首次启用需要先安装包含此功能的发行包，再在宿主机配置管理服务（默认安装路径示例；自定义安装需相应修改 unit 的两个路径，多实例需独立 unit）：
+安装和升级默认注册宿主机管理服务，并启用开机启动。安装器按运行中的服务管理器选择配置：systemd（例如 Debian、Ubuntu、CentOS、Rocky Linux）或 OpenRC（例如 Alpine Linux），不依赖发行版名称。需使用 root，预先安装 Docker Engine、Compose 插件及 Buildx；发行二进制仍为 Linux x86_64 musl，不新增其他架构支持。没有 systemd/OpenRC 的环境会在安装前报错，不会自行安装 init 系统。
+
+默认 `/opt/piccove` 实例使用 `piccove-web-manager` 服务名；其他目录使用带目录哈希后缀的独立服务名，成功后由命令输出。安装器不会覆盖不一致的既有服务配置；遇到冲突需先核对实际安装目录及自定义配置。升级只启用/启动管理服务，不重启已运行进程，以免中断 Web 发起的升级。
+
+旧安装可执行新版本 `piccovectl update` 补装管理服务（即使已经是相同版本也会检查并启用）。需要手动配置时，默认目录模板如下；自定义目录须正确转义启动路径，不能直接照抄：
 
 ```sh
-# 先核对目标 unit 尚不存在，已有服务应审查后合并配置，勿直接覆盖。
+# systemd：先确认目标文件不存在，不覆盖已有配置。
 sudo cp /opt/piccove/deploy/piccove-web-manager.service /etc/systemd/system/piccove-web-manager.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now piccove-web-manager.service
+
+# OpenRC（Alpine）：先确认目标文件不存在。
+sudo install -m 755 /opt/piccove/deploy/piccove-web-manager.openrc /etc/init.d/piccove-web-manager
+sudo rc-update add piccove-web-manager default
+sudo rc-service piccove-web-manager start
 ```
+
+OpenRC 使用 `supervise-daemon`，启动失败后重试，日志经 `logger` 写入系统日志；systemd 使用 `Restart=on-failure`。这样 Docker 刚启动、API 容器尚未就绪时不会只尝试一次就永久退出。服务只等待管理员操作，不自动升级网站。
 
 之后可完全在 Web 检测版本、确认「升级并重启」或单独重启。任务状态保存在安装目录 `.piccove-web-operation.json`，刷新页面后仍可查询；重复运行的管理进程和并发操作会被拒绝。没有管理服务时版本检查仍可使用，操作按钮禁用并说明原因。
 
 升级复用原有下载、SHA256、发行清单、版本校验和 Compose 健康检查，不自动备份、不自动降级。升级或重启期间网页短暂不可用；升级失败可能停止 API/Web，此时 Web 无法显示最终错误，需在宿主机检查：
 
 ```sh
+# systemd
 sudo journalctl -u piccove-web-manager.service -n 100
+# OpenRC：检查状态及系统日志中 piccove-web-manager 的记录
+sudo rc-service piccove-web-manager status
 sudo piccovectl status
 ```
 
@@ -163,3 +177,7 @@ sudo piccovectl status
 恢复时先停 API，验证备份校验和、恢复数据库和全部目录，核对实际服务身份、挂载映射、文件属主及权限。恢复到新磁盘/新目录后设备号和 inode 会变化，必须由运维明确重新确认身份；应用不会静默重绑。对**已恢复并逐项核对的具体目录**，在容器视角读取 `stat -c '%d:%i' /具体存储目录`，核对 `storage_locations` 中对应 `id/path` 后只更新该记录的 `identity`，不得清空整张表或批量接受未知目录。保持原容器路径，数据库中的 `storage_root` 与外链即可保持原值。
 
 恢复后先检查公开和私有原图、缩略图及大图完整下载，再允许上传和继续任务。涉及迁移中的旧副本时，恢复会改变文件身份，旧清理任务可能安全失败；必须重新核对文件，不能绕过校验强行清理。跨服务器恢复仍需执行上述人工验收，本次实现没有自动多磁盘备份工具。
+
+### 安装器冒烟测试的环境要求
+
+`scripts/smoke.py` 会注册开机服务，必须在任务专用、可销毁的 Linux 测试机运行，不得在生产或共享宿主机运行。脚本要求显式设置 `PICCOVE_SMOKE_DISPOSABLE_HOST=1`，并只清理本次随机安装目录对应的管理服务、容器与卷。此标记只是确认测试环境，不能提供隔离。

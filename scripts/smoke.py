@@ -37,6 +37,8 @@ def package(stage, output):
 
 
 def smoke(bundle, work_parent):
+    if os.environ.get('PICCOVE_SMOKE_DISPOSABLE_HOST') != '1':
+        raise RuntimeError('安装测试会注册系统服务，只能在专用可销毁测试机上设置 PICCOVE_SMOKE_DISPOSABLE_HOST=1 后运行。')
     with tempfile.TemporaryDirectory(prefix='piccove-smoke-', dir=work_parent) as temporary:
         work = Path(temporary)
         stage = work / 'stage'
@@ -47,6 +49,11 @@ def smoke(bundle, work_parent):
         (stage / 'web/assets/obsolete-smoke.js').write_text('old asset')
         archive = package(stage, work / 'first')
         release = work / 'installed'
+        manager = 'piccove-web-manager-' + hashlib.sha256(os.fsencode(release)).hexdigest()
+        systemd = Path('/run/systemd/system').is_dir()
+        service_file = Path('/etc/systemd/system' if systemd else '/etc/init.d') / (manager + '.service' if systemd else manager)
+        if service_file.exists() or service_file.is_symlink():
+            raise RuntimeError('测试服务路径已存在：' + str(service_file))
         project = 'piccove-smoke-' + os.urandom(6).hex()
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
@@ -108,6 +115,16 @@ def smoke(bundle, work_parent):
                 assert subprocess.run(['docker', 'image', 'inspect', image], stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL).returncode != 0, image
         finally:
+            # Stop the task-owned manager before removing its installation and containers.
+            if service_file.exists():
+                if systemd:
+                    subprocess.run(['systemctl', 'disable', '--now', manager + '.service'], check=True)
+                else:
+                    subprocess.run(['rc-service', '--ifstarted', manager, 'stop'], check=True)
+                    subprocess.run(['rc-update', 'del', manager, 'default'], check=True)
+                service_file.unlink()
+                if systemd:
+                    subprocess.run(['systemctl', 'daemon-reload'], check=True)
             # Only this invocation's containers, volumes and images are eligible for removal.
             if (release / '.env').exists():
                 subprocess.run([*compose, 'down', '--volumes', '--rmi', 'local', '--remove-orphans'], check=True)

@@ -8,6 +8,7 @@ import os
 import re
 from urllib.parse import urlsplit
 import struct
+import time
 import urllib.error
 import urllib.request
 import zlib
@@ -74,7 +75,14 @@ request(alice, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/data/uploads'}
 request(alice, '/api/v1/admin/system/restart', 'POST', expected=403)
 request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '../bad'}, 400)
 request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/does-not-exist-piccove-test'}, 400)
-assert request(admin, '/api/v1/admin/system')['version']
+deadline = time.monotonic() + 10
+while True:
+    system = request(admin, '/api/v1/admin/system')
+    assert system['version']
+    if system['manager'] is not None:
+        break
+    assert time.monotonic() < deadline, system['manager_error']
+    time.sleep(0.2)
 original_storage = request(admin, '/api/v1/admin/storage')['upload_dir']
 request(alice, '/api/v1/images?all=true', expected=403)
 request(alice, '/api/v1/settings', 'PATCH', {'registration_open': True}, 403)

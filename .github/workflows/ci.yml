@@ -39,7 +39,7 @@ jobs:
         run: |
           mkdir "$RUNNER_TEMP/piccove-unpacked"
           tar -xzf "$RUNNER_TEMP"/piccove-release/*.tar.gz -C "$RUNNER_TEMP/piccove-unpacked"
-          python3 -B scripts/smoke.py "$RUNNER_TEMP"/piccove-unpacked/piccove-* --work-parent "$RUNNER_TEMP"
+          sudo env PICCOVE_SMOKE_DISPOSABLE_HOST=1 python3 -B scripts/smoke.py "$RUNNER_TEMP"/piccove-unpacked/piccove-* --work-parent "$RUNNER_TEMP"
       - name: Remove final test artifacts
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/piccove-release" "$RUNNER_TEMP/piccove-unpacked"

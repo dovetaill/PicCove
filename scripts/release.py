@@ -95,6 +95,7 @@ def build(output, work_parent, tag=None):
         shutil.copytree(ROOT / 'apps/api', source / 'apps/api', ignore=shutil.ignore_patterns('target', '.env', 'uploads'))
         shutil.copytree(ROOT / 'admin', source / 'admin', ignore=shutil.ignore_patterns('node_modules', 'dist', '.env', '.env.*'))
         shutil.copytree(ROOT / 'tests', source / 'tests')
+        shutil.copytree(ROOT / 'deploy', source / 'deploy')
         api = source / 'apps/api'
         fmt_config = work / 'rustfmt.toml'
         fmt_config.write_text('')

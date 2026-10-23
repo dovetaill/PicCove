@@ -1,3 +1,4 @@
+mod service;
 mod terminal;
 mod web;
 
@@ -106,6 +107,7 @@ impl Args {
                     .any(|c| matches!(c, Component::ParentDir)),
             "安装目录必须为不含 .. 的绝对路径"
         );
+        result.directory = result.directory.components().collect();
         if let Some(v) = &result.version {
             version(v)?;
         }
@@ -1181,6 +1183,7 @@ fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
             std::env::consts::OS == "linux" && std::env::consts::ARCH == "x86_64",
             "仅支持 Linux x86_64"
         );
+        let manager = service::Service::prepare(&args.directory)?;
         if args.action != "install" {
             config(rt, &args.directory)?;
         }
@@ -1193,10 +1196,13 @@ fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
         };
         let (bundle, manifest) = unpack(&archive, &work.path().join("stage"))?;
         if args.action == "install" {
-            install(rt, args, &bundle, &manifest)
+            install(rt, args, &bundle, &manifest)?;
         } else {
-            update(rt, args, &bundle, &manifest)
+            update(rt, args, &bundle, &manifest)?;
         }
+        manager
+            .enable(rt)
+            .context("网站安装或升级已完成，但管理服务启用失败；请检查服务配置与日志")
     } else if args.action == "backup" {
         backup(rt, args)
     } else {
@@ -1291,6 +1297,13 @@ mod tests {
     use super::*;
     #[test]
     fn arguments_and_versions() {
+        let normalized = Args::parse(
+            ["install", "--directory", "/opt//piccove/./"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(normalized.directory.as_os_str(), "/opt/piccove");
         let update = Args::parse(["update"].into_iter().map(str::to_string)).unwrap();
         assert!(update.version.is_none());
         assert!(update.yes);

@@ -899,21 +899,255 @@ td small {
   .cove-collapse-button {
     display: inline-flex;
   }
-  .cove-workspace.cove-collapsed {
-    --sidebar-width: 0px;
-  }
   .cove-collapsed .cove-sidebar {
+    padding-inline: 12px;
+    overflow-x: hidden;
+  }
+  .cove-collapsed .cove-sidebar:hover,
+  .cove-collapsed .cove-sidebar:focus-within {
+    width: var(--sidebar-default-width);
+    padding-inline: 24px;
+  }
+  .cove-collapsed .cove-sidebar:not(:hover):not(:focus-within) .cove-brand {
+    margin-inline: 8px;
+  }
+  .cove-collapsed .cove-sidebar:not(:hover):not(:focus-within) .cove-nav-text,
+  .cove-collapsed .cove-sidebar:not(:hover):not(:focus-within) .cove-storage {
     display: none;
   }
+  .cove-collapsed .cove-sidebar:not(:hover):not(:focus-within) .cove-brand strong {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .cove-collapsed .cove-sidebar:not(:hover):not(:focus-within) .cove-nav-label {
+    font-size: 0;
+    height: 32px;
+  }
+  .cove-collapsed
+    .cove-sidebar:not(:hover):not(:focus-within)
+    .cove-nav-label::after {
+    content: '···';
+    font-size: 12px;
+  }
 }
-.cove-system-settings {
+.cove-sidebar {
+  overflow-y: auto;
+}
+.cove-sidebar nav > a svg,
+.cove-sidebar .cove-brand > span {
+  flex-shrink: 0;
+}
+.cove-nav-text {
+  white-space: nowrap;
+}
+.cove-settings-layout {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  align-items: start;
+  gap: 28px;
+}
+.cove-settings-nav {
+  position: sticky;
+  top: calc(var(--header-height) + 24px);
+  display: grid;
+  gap: 6px;
+}
+.cove-settings-nav a {
+  padding: 10px 14px;
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.cove-settings-nav a:hover,
+.cove-settings-nav a:focus-visible {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.cove-settings-content {
   display: grid;
   gap: 24px;
-  margin-top: 24px;
+  min-width: 0;
 }
-.cove-system-settings form {
+.cove-settings-card {
+  min-width: 0;
+  scroll-margin-top: calc(var(--header-height) + 24px);
+}
+.cove-settings-card:target {
+  border-color: var(--primary);
+}
+.cove-settings-card [data-slot='card-content'] {
+  display: grid;
+  gap: 20px;
+  padding: 24px;
+  font-size: 13px;
+}
+.cove-settings-card h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.cove-settings-card h3,
+.cove-settings-card label {
+  font-weight: 500;
+}
+.cove-settings-title {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.cove-settings-title p {
+  color: var(--muted-foreground);
+  margin-top: 6px;
+}
+.cove-settings-card p {
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.cove-settings-section {
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
   display: grid;
   gap: 12px;
+}
+.cove-settings-input-action,
+.cove-location-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.cove-settings-input-action input {
+  min-width: 0;
+}
+.cove-location-heading > :last-child {
+  flex-shrink: 0;
+}
+.cove-location-heading code {
+  overflow-wrap: anywhere;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.cove-location-list,
+.cove-job-list {
+  display: grid;
+  gap: 16px;
+}
+.cove-location-list > li,
+.cove-job-list > li {
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px;
+}
+.cove-storage-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.cove-storage-metrics dt {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-bottom: 6px;
+}
+.cove-storage-metrics dd {
+  font-size: 14px;
+  font-weight: 500;
+}
+.cove-storage-roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cove-storage-roots code,
+.cove-settings-note {
+  background: var(--muted);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+}
+.cove-settings-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.cove-settings-card label:not(.cove-check) {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.cove-settings-card [data-slot='select-trigger'] {
+  width: 100%;
+  min-width: 0;
+}
+.cove-settings-card [data-slot='select-value'] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cove-settings-card .cove-actions {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.cove-import-files,
+.cove-job-results {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.cove-import-files li,
+.cove-job-results li {
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.cove-import-files li + li,
+.cove-job-results li + li {
+  border-top: 1px solid var(--border);
+}
+.cove-import-files span {
+  min-width: 0;
+  flex: 1;
+}
+.cove-import-files input,
+.cove-import-files small {
+  flex-shrink: 0;
+}
+@media (max-width: 1279px) {
+  .cove-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+  .cove-settings-nav {
+    position: static;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+}
+@media (max-width: 639px) {
+  .cove-settings-card [data-slot='card-content'] {
+    padding: 18px;
+  }
+  .cove-settings-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cove-settings-input-action,
+  .cove-location-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .cove-storage-metrics {
+    gap: 10px;
+  }
+  .cove-storage-metrics dd {
+    font-size: 12px;
+  }
 }
 
 .cove-upload-queue {

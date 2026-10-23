@@ -147,16 +147,16 @@ Passkey 绑定需要 HTTPS（本机 localhost 除外），使用当前网站域�
 
 完成后删除本次测试图片和相册；临时账号可禁用。不要用真实用户图片测试删除功能。
 
-### 自动隔离自测
+### 专用测试机自测
 
-源码仓库中提供发行包自测脚本，**它不会检查或修改正在运行的站点**，而是创建独立 Compose 项目，测试后删除项目容器、卷及专用镜像：
+发行包自测会注册系统管理服务，**只能在专用、可销毁的 Linux 测试机运行，不能在生产或共享宿主机运行**。脚本创建独立 Compose 项目，结束后删除本次管理服务、容器、卷及专用镜像：
 
 ```bash
 # 在源码目录执行；参数必须是尚未安装、没有 .env 的解压发行包。
-python3 -B scripts/smoke.py /path/to/piccove-v0.1.4-linux-x86_64
+sudo env PICCOVE_SMOKE_DISPOSABLE_HOST=1 python3 -B scripts/smoke.py /path/to/piccove-v0.1.10-linux-x86_64
 ```
 
-该脚本检查真实 Nginx 下的网页及 JS/CSS 完整传输，再执行账号、图片、隔离、配额等 HTTP 功能检查。它不能替代实体设备操作或实际公网 HTTPS 验收。以普通 Docker 用户运行；root 运行时 HTTP 测试子进程会降权，数据库和网页均位于独立容器。
+该脚本检查真实 Nginx 下的网页及 JS/CSS 完整传输，再执行账号、图片、隔离、配额等 HTTP 功能检查。它不能替代实体设备操作或实际公网 HTTPS 验收。注册服务需要 root；HTTP 测试子进程会降权，数据库和网页位于独立容器。环境标记只确认测试机用途，不提供系统隔离。
 
 [已有验证记录](docs/VERIFICATION.md)包含 22 项真实 Chromium 交互测试、图片布局复验、备份恢复和旧版迁移验证。
 
