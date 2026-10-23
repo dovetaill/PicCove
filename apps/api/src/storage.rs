@@ -183,7 +183,9 @@ impl Directory {
                 return Err(std::io::Error::other("copy checksum mismatch"));
             }
             if unsafe {
-                libc::renameat2(
+                // The bundled musl may lack the libc wrapper; keep Linux's atomic no-replace syscall.
+                libc::syscall(
+                    libc::SYS_renameat2,
                     parent.as_raw_fd(),
                     temporary.as_ptr(),
                     parent.as_raw_fd(),
