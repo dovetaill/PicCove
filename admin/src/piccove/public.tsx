@@ -1,19 +1,21 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight,
+  FolderHeart,
   Images,
   Link2,
-  FolderHeart,
   ShieldCheck,
   Waves,
 } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { api, useSettings } from './api';
+import { passkey } from './passkey';
+
 export function Brand() {
   return (
     <Link to="/" className="cove-brand">
@@ -147,16 +149,21 @@ export function Auth({ register = false }: { register?: boolean }) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [method, setMethod] = useState<'passkey' | 'password'>('passkey');
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setBusy(true);
     setError('');
     try {
-      await api(`/auth/${register ? 'register' : 'login'}`, 'POST', {
-        username: form.get('username'),
-        password: form.get('password'),
-      });
+      if (!register && method === 'passkey') {
+        await passkey(false, { username: form.get('username') });
+      } else
+        await api(`/auth/${register ? 'register' : 'login'}`, 'POST', {
+          username: form.get('username'),
+          password: form.get('password'),
+          code: form.get('code') || '',
+        });
       if (register) {
         toast.success('注册成功，请登录');
         navigate('/login');
@@ -204,18 +211,50 @@ export function Auth({ register = false }: { register?: boolean }) {
                   placeholder="3–32 位字母、数字、下划线或连字符"
                 />
               </label>
-              <label>
-                密码
-                <Input
-                  name="password"
-                  type="password"
-                  required
-                  minLength={12}
-                  maxLength={128}
-                  autoComplete={register ? 'new-password' : 'current-password'}
-                  placeholder="至少 12 字节"
-                />
-              </label>
+              {(register || method === 'password') && (
+                <label>
+                  密码
+                  <Input
+                    name="password"
+                    type="password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete={
+                      register ? 'new-password' : 'current-password'
+                    }
+                    placeholder="至少 12 字节"
+                  />
+                </label>
+              )}
+              {!register && method === 'password' && (
+                <label>
+                  动态验证码（已开启二步验证时必填）
+                  <Input
+                    name="code"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    placeholder="六位动态验证码"
+                  />
+                </label>
+              )}
+              {!register && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    setMethod(method === 'passkey' ? 'password' : 'passkey');
+                    setError('');
+                  }}
+                >
+                  {method === 'passkey'
+                    ? '改用密码＋二步验证'
+                    : '优先使用 Passkey'}
+                </Button>
+              )}
               {register && (
                 <label className="cove-check">
                   <input type="checkbox" required />
@@ -228,7 +267,13 @@ export function Auth({ register = false }: { register?: boolean }) {
                 </p>
               )}
               <Button disabled={busy} type="submit">
-                {busy ? '请稍候…' : register ? '创建账号' : '登录'}
+                {busy
+                  ? '请稍候…'
+                  : register
+                    ? '创建账号'
+                    : method === 'passkey'
+                      ? '使用 Passkey 登录'
+                      : '使用密码登录'}
               </Button>
             </form>
           )}

@@ -1,51 +1,55 @@
 import { useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { NavLink, Navigate, Outlet, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
 import {
-  CloudUpload,
-  Images,
-  FolderHeart,
-  Users,
-  Settings2,
-  LogOut,
-  Copy,
-  Trash2,
-  Pencil,
   ArrowLeft,
   ArrowRight,
+  CloudUpload,
+  Copy,
+  FolderHeart,
+  Images,
+  LogOut,
+  Menu,
+  Pencil,
+  Settings2,
   ShieldCheck,
+  Trash2,
+  Users,
+  X,
 } from 'lucide-react';
+import { Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
-import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
   Select,
-  SelectTrigger,
-  SelectValue,
   SelectContent,
   SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import {
   api,
+  imageLink,
+  size,
   useMe,
   useSettings,
-  size,
-  imageLink,
-  type Picture,
+  type Account,
   type Album,
   type Page,
-  type Account,
+  type Picture,
 } from './api';
 import { Brand } from './public';
+import { AccountSecurity } from './security';
+
 function message(error: unknown) {
   return error instanceof Error ? error.message : '操作失败';
 }
@@ -70,6 +74,7 @@ function useAction() {
   return { busy, run };
 }
 export function Workspace() {
+  const [menuOpen, setMenuOpen] = useState(false);
   const me = useMe();
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -97,11 +102,19 @@ export function Workspace() {
     }
   }
   return (
-    <div className="cove-workspace">
-      <aside className="cove-sidebar">
+    <div className="demo1 sidebar-fixed header-fixed cove-workspace">
+      <aside
+        id="workspace-navigation"
+        className={`sidebar cove-sidebar${menuOpen ? ' is-open' : ''}`}
+        aria-label="工作台导航"
+      >
         <Brand />
         <span className="cove-nav-label">我的空间</span>
-        <nav>
+        <nav
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest('a')) setMenuOpen(false);
+          }}
+        >
           <NavLink to="/app" end>
             <Images />
             图片库
@@ -144,8 +157,18 @@ export function Workspace() {
           <p>Web 上传默认公开；安卓私有图片仅本人及管理员可见。</p>
         </div>
       </aside>
-      <div className="cove-workbody">
-        <header className="cove-workheader">
+      <div className="wrapper cove-workbody">
+        <header className="header cove-workheader">
+          <Button
+            className="cove-menu-button"
+            variant="ghost"
+            aria-label={menuOpen ? '关闭导航' : '打开导航'}
+            aria-expanded={menuOpen}
+            aria-controls="workspace-navigation"
+            onClick={() => setMenuOpen(!menuOpen)}
+          >
+            {menuOpen ? <X /> : <Menu />}
+          </Button>
           <span>
             工作台 <span className="cove-muted">/ 图湾</span>
           </span>
@@ -743,6 +766,7 @@ export function AccountSettings() {
         title="账号设置"
         description="修改密码后，所有设备需重新登录。"
       />
+      <AccountSecurity />
       <Card className="cove-narrow">
         <CardContent>
           <form
@@ -754,6 +778,7 @@ export function AccountSettings() {
                 await api('/me/password', 'POST', {
                   current_password: form.get('current'),
                   password: form.get('password'),
+                  code: form.get('code') || '',
                 });
                 navigate('/login');
               }, '密码已更新，请重新登录');
@@ -777,6 +802,16 @@ export function AccountSettings() {
                 minLength={12}
                 maxLength={128}
                 required
+              />
+            </label>
+            <label>
+              动态验证码（已开启二步验证时必填）
+              <Input
+                name="code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
               />
             </label>
             <Button disabled={action.busy} type="submit">

@@ -1,3 +1,5 @@
+mod security;
+
 use anyhow::{bail, Context};
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, SaltString},
@@ -34,6 +36,7 @@ struct AppState {
     contact_url: Option<String>,
     uploads: Mutex<()>,
     passwords: Arc<Semaphore>,
+    security: security::Security,
 }
 #[derive(Debug)]
 struct ApiError(StatusCode, String);
@@ -80,6 +83,8 @@ struct User {
     #[serde(skip_serializing)]
     password_hash: String,
     created_at: DateTime<Utc>,
+    #[serde(skip_serializing)]
+    security_version: i64,
 }
 #[derive(Serialize, sqlx::FromRow)]
 struct ImageRow {
@@ -222,6 +227,8 @@ async fn verify_password(password: String, hash: String, state: &AppState) -> Ap
 struct Credentials {
     username: String,
     password: String,
+    #[serde(default)]
+    code: String,
 }
 fn cookie(token: &str, state: &AppState, max_age: u32) -> HeaderValue {
     HeaderValue::from_str(&format!(
@@ -256,9 +263,13 @@ async fn login(
         .fetch_one(&mut *tx)
         .await
         .map_err(internal)?;
-    if current.disabled || current.password_hash != user.password_hash {
+    if current.disabled
+        || current.password_hash != user.password_hash
+        || current.security_version != user.security_version
+    {
         return Err(unauthorized());
     }
+    security::verify_totp(&mut tx, user.id, &input.code).await?;
     sqlx::query("DELETE FROM sessions WHERE expires_at<NOW()")
         .execute(&mut *tx)
         .await
@@ -373,6 +384,8 @@ async fn me(
 struct PasswordInput {
     current_password: String,
     password: String,
+    #[serde(default)]
+    code: String,
 }
 async fn change_password(
     State(state): State<Arc<AppState>>,
@@ -384,8 +397,10 @@ async fn change_password(
     verify_password(input.current_password, user.password_hash.clone(), &state).await?;
     let hash = hash_password(input.password, &state).await?;
     let mut tx = state.pool.begin().await.map_err(internal)?;
+    security::lock_current(&mut tx, &user, &headers).await?;
+    security::verify_totp(&mut tx, user.id, &input.code).await?;
     let result = sqlx::query(
-        "UPDATE users SET password_hash=$1 WHERE id=$2 AND password_hash=$3 AND NOT disabled",
+        "UPDATE users SET password_hash=$1,security_version=security_version+1 WHERE id=$2 AND password_hash=$3 AND NOT disabled",
     )
     .bind(hash)
     .bind(user.id)
@@ -788,7 +803,7 @@ async fn update_user(
     if user.is_admin && input.disabled {
         return Err(bad("不能禁用管理员账号"));
     }
-    sqlx::query("UPDATE users SET quota_bytes=$1,disabled=$2,password_hash=COALESCE($3,password_hash) WHERE id=$4").bind(input.quota_bytes).bind(input.disabled).bind(&hash).bind(id).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query("UPDATE users SET quota_bytes=$1,disabled=$2,password_hash=COALESCE($3,password_hash),security_version=security_version+1 WHERE id=$4").bind(input.quota_bytes).bind(input.disabled).bind(&hash).bind(id).execute(&mut *tx).await.map_err(internal)?;
     if input.disabled || hash.is_some() {
         sqlx::query("DELETE FROM sessions WHERE user_id=$1")
             .bind(id)
@@ -857,6 +872,7 @@ fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/v1/settings", get(settings).patch(update_settings))
+        .merge(security::routes())
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/register", post(register))
@@ -970,6 +986,7 @@ async fn main() -> anyhow::Result<()> {
         .connect(&database_url)
         .await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
+    let security = security::Security::new(&origin)?;
     let state = Arc::new(AppState {
         pool,
         upload_dir,
@@ -978,6 +995,7 @@ async fn main() -> anyhow::Result<()> {
         contact_url,
         uploads: Mutex::new(()),
         passwords: Arc::new(Semaphore::new(4)),
+        security,
     });
     bootstrap(&state).await?;
     let listener = tokio::net::TcpListener::bind(

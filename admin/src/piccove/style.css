@@ -1,4 +1,5 @@
-:root {
+.cove-home,
+.cove-auth {
   --primary: #246b5a;
   --primary-foreground: #fff;
   --ring: #246b5a;
@@ -15,6 +16,13 @@
 }
 body {
   margin: 0;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    'PingFang SC',
+    sans-serif;
 }
 #root {
   display: block;
@@ -267,20 +275,24 @@ input {
   color: #417e65;
 }
 .cove-workspace {
-  display: flex;
+  display: block;
   min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
 }
 .cove-sidebar {
-  width: 238px;
+  width: var(--sidebar-width);
   flex-shrink: 0;
-  background: #fff;
-  border-right: 1px solid #e5ebe6;
-  padding: 30px 20px;
+  background: var(--muted);
+  border-right: 1px solid var(--border);
+  padding: 20px 24px;
   display: flex;
   flex-direction: column;
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
   height: 100vh;
+  z-index: 20;
 }
 .cove-sidebar .cove-brand {
   margin: 0 10px 35px;
@@ -291,7 +303,7 @@ input {
 .cove-nav-label {
   display: block;
   font-size: 10px;
-  color: #96a49b;
+  color: var(--muted-foreground);
   letter-spacing: 1.2px;
   padding: 10px 14px;
 }
@@ -305,7 +317,7 @@ input {
   gap: 12px;
   padding: 12px 14px;
   border-radius: 8px;
-  color: #74847a;
+  color: var(--muted-foreground);
   font-size: 13px;
 }
 .cove-sidebar nav > a svg {
@@ -313,31 +325,31 @@ input {
   height: 18px;
 }
 .cove-sidebar nav > a.active {
-  color: #2d735b;
-  background: #eaf3ed;
+  color: var(--foreground);
+  background: var(--muted);
   font-weight: 600;
 }
 .cove-storage {
   margin-top: auto;
   padding: 35px 12px 0;
   font-size: 11px;
-  color: #84968b;
+  color: var(--muted-foreground);
 }
 .cove-storage strong {
   display: block;
   font-size: 14px;
-  color: #4e6b59;
+  color: var(--foreground);
   margin: 10px 0;
 }
 .cove-storage small {
-  color: #98a59c;
+  color: var(--muted-foreground);
   font-size: 11px;
   font-weight: 400;
 }
 .cove-storage progress {
   width: 100%;
   height: 5px;
-  accent-color: #4c9271;
+  accent-color: var(--primary);
   margin-bottom: 12px;
 }
 .cove-storage p {
@@ -348,13 +360,18 @@ input {
   min-width: 0;
 }
 .cove-workheader {
-  height: 78px;
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 10;
+  height: var(--header-height);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 38px;
-  background: #ffffffbd;
-  border-bottom: 1px solid #e5ebe6;
+  background: var(--background);
+  border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 .cove-workheader > div {
@@ -363,8 +380,8 @@ input {
   gap: 12px;
 }
 .cove-avatar {
-  background: #e6f0e8;
-  color: #518061;
+  background: var(--muted);
+  color: var(--foreground);
   width: 32px;
   height: 32px;
   border-radius: 50%;
@@ -388,13 +405,13 @@ input {
 }
 .cove-heading p {
   font-size: 13px;
-  color: #8b9a90;
+  color: var(--muted-foreground);
   line-height: 1.8;
 }
 .cove-drop {
-  border: 1.5px dashed #bdd5c6;
+  border: 1px dashed var(--input);
   border-radius: 14px;
-  background: linear-gradient(120deg, #f0f7f2, #fafcfb);
+  background: var(--muted);
   padding: 27px;
   display: flex;
   flex-direction: column;
@@ -403,14 +420,14 @@ input {
   text-align: center;
 }
 .cove-drop.is-dragging {
-  background: #dfefe3;
-  border-color: #327252;
+  background: var(--accent);
+  border-color: var(--primary);
 }
 .cove-upload-icon {
   padding: 15px;
   border-radius: 14px;
-  background: #e0eee4;
-  color: #4d8b68;
+  background: var(--background);
+  color: var(--foreground);
   margin-bottom: 5px;
 }
 .cove-upload-icon svg {
@@ -451,7 +468,7 @@ input {
 }
 .cove-toolbar h2 span {
   font-size: 11px;
-  background: #eaf0eb;
+  background: var(--border);
   color: #799080;
   border-radius: 6px;
   padding: 3px 6px;
@@ -493,7 +510,7 @@ input {
 .cove-image-preview {
   height: 175px;
   position: relative;
-  background: #eef2ee;
+  background: var(--muted);
 }
 .cove-image-preview a {
   display: grid;
@@ -528,14 +545,14 @@ input {
   display: flex;
   justify-content: space-between;
   font-size: 10px;
-  color: #97a59a;
+  color: var(--muted-foreground);
   margin: 8px 0;
 }
 .cove-image-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  border-top: 1px solid #edf1ed;
+  border-top: 1px solid var(--border);
   padding-top: 8px;
   margin-top: 8px;
 }
@@ -544,7 +561,7 @@ input {
 }
 .cove-owner {
   font-size: 9px;
-  color: #97a59a;
+  color: var(--muted-foreground);
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -556,18 +573,18 @@ input {
   gap: 18px;
   margin: 30px 0;
   font-size: 12px;
-  color: #8c9b91;
+  color: var(--muted-foreground);
 }
 .cove-empty {
   padding: 60px 20px;
   text-align: center;
-  color: #8d9d92;
+  color: var(--muted-foreground);
   display: grid;
   justify-items: center;
   gap: 12px;
   font-size: 13px;
   background: #fff;
-  border: 1px solid #e6ece7;
+  border: 1px solid var(--border);
   border-radius: 12px;
 }
 .cove-empty svg {
@@ -592,7 +609,7 @@ input {
   overflow-wrap: anywhere;
 }
 .cove-albums svg {
-  color: #679378;
+  color: var(--foreground);
 }
 .cove-narrow {
   max-width: 530px;
@@ -609,7 +626,7 @@ input {
 }
 .cove-setting p {
   font-size: 12px;
-  color: #8a9b8e;
+  color: var(--muted-foreground);
   margin: 8px 0;
 }
 .cove-form label.cove-setting {
@@ -629,16 +646,16 @@ table {
 }
 th {
   font-weight: 500;
-  color: #96a398;
+  color: var(--muted-foreground);
   padding: 14px;
 }
 td {
   padding: 17px 14px;
-  border-top: 1px solid #eaf0eb;
+  border-top: 1px solid var(--border);
 }
 td small {
   display: block;
-  color: #7a9583;
+  color: var(--muted-foreground);
   font-size: 10px;
   margin-top: 4px;
 }
@@ -665,7 +682,7 @@ td small {
 .cove-loading {
   padding: 50px;
   text-align: center;
-  color: #819588;
+  color: var(--muted-foreground);
 }
 @media (min-width: 1600px) {
   .cove-gallery {
@@ -795,5 +812,52 @@ td small {
   * {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+.cove-workspace .cove-brand > span {
+  background: var(--primary);
+}
+.cove-workspace .cove-brand small,
+.cove-workspace .cove-muted {
+  color: var(--muted-foreground);
+}
+.cove-sidebar nav > a.active {
+  background: var(--background);
+  box-shadow: 0 1px 2px #00000008;
+}
+.cove-security {
+  max-width: 760px;
+  margin-bottom: 24px;
+  gap: 24px;
+}
+.cove-menu-button {
+  display: none;
+}
+@media (max-width: 1023px) {
+  .cove-menu-button {
+    display: inline-flex;
+  }
+  .cove-sidebar {
+    display: none;
+  }
+  .cove-sidebar.is-open {
+    display: flex;
+    position: fixed;
+    inset: var(--header-height) 0 0;
+    width: 100%;
+    height: calc(100dvh - var(--header-height));
+    overflow-y: auto;
+    z-index: 20;
+    background: var(--background);
+  }
+  .cove-sidebar.is-open nav {
+    display: grid;
+  }
+  .cove-sidebar.is-open .cove-nav-label {
+    display: block;
+  }
+  .cove-workheader {
+    background: var(--background);
   }
 }

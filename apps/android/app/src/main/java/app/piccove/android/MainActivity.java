@@ -153,20 +153,21 @@ public class MainActivity extends Activity {
         EditText server=field("服务器 · https://img.example.com",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
         EditText username=field("用户名",InputType.TYPE_CLASS_TEXT);
         EditText password=field("密码",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        EditText code=field("动态验证码（已开启二步验证时必填）",InputType.TYPE_CLASS_NUMBER);
         server.setText(getPreferences(0).getString("server","")); username.setText(getPreferences(0).getString("username",""));
-        content.addView(server); content.addView(username); content.addView(password);
+        content.addView(server); content.addView(username); content.addView(password); content.addView(code);
         content.addView(button("连接并登录", () -> {
-            final String address=server.getText().toString(), name=username.getText().toString().trim(), secret=password.getText().toString();
+            final String address=server.getText().toString(), name=username.getText().toString().trim(), secret=password.getText().toString(), otp=code.getText().toString().trim();
             if (name.isEmpty() || secret.isEmpty()) { progress("请填写用户名与密码"); return; }
             perform("正在连接…", () -> {
                 ApiClient candidate=new ApiClient(address);
                 if (!candidate.json("GET","/settings",null).optBoolean("private_images",false))
                     throw new Exception("服务端尚不支持私有相册，请先升级 PicCove 服务端");
-                candidate.json("POST","/auth/login",new JSONObject().put("username",name).put("password",secret));
+                candidate.json("POST","/auth/login",new JSONObject().put("username",name).put("password",secret).put("code",otp));
                 JSONObject me=candidate.json("GET","/me",null);
                 api=candidate; account=me;
             }, () -> {
-                password.setText(""); getPreferences(0).edit().putString("server",api.origin).putString("username",name).apply();
+                password.setText(""); code.setText(""); getPreferences(0).edit().putString("server",api.origin).putString("username",name).apply();
                 tab="photos"; albumId=null; albumName="全部照片"; page=1; refresh();
             });
         }));

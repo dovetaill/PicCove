@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { decode, encode } from '../admin/src/piccove/passkey';
 import { api, imageLink, size, type Picture } from '../admin/src/piccove/api';
 const picture = {
   url: 'https://img.example/i/id',
@@ -36,4 +37,6 @@ globalThis.fetch = async () =>
     headers: { 'Content-Type': 'application/json' },
   });
 assert.deepEqual(await api('/settings'), { registration_open: false });
-console.log('web helpers: 9 assertions passed');
+const credentialBytes = new Uint8Array([0, 127, 128, 255]);
+assert.deepEqual(decode(encode(credentialBytes.buffer)), credentialBytes);
+console.log('web helpers: 10 assertions passed');
