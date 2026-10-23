@@ -17,10 +17,10 @@ Android 独立相册首版见 [安卓安装、构建和使用说明](docs/ANDROI
 首次安装：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin https://img.example.com --non-interactive
+curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin https://img.example.com
 ```
 
-安装后运行 `sudo piccovectl` 打开中文菜单，或执行 `sudo piccovectl update --non-interactive` 升级。升级成功不保留旧程序版本，不自动备份；需要备份时显式运行 `piccovectl backup`。默认目录 `/opt/piccove`，本机端口 `18081`。
+安装后运行 `sudo piccovectl` 打开中文菜单，或执行 `sudo piccovectl update` 升级。升级成功不保留旧程序版本，不自动备份；需要备份时显式运行 `piccovectl backup`。默认目录 `/opt/piccove`，本机端口 `18081`。
 
 [安装参数、命令及失败处理](docs/OPERATIONS.md)。目前 GitHub 只构建 Linux 服务端、Web 和 Rust CLI，不构建 Android／Windows PC。
 
@@ -63,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/inst
 ### 本机试用
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin http://127.0.0.1:8080 --port 8080 --non-interactive
+curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin http://127.0.0.1:8080 --port 8080
 ```
 
 浏览器打开 `http://127.0.0.1:8080`，用户名 `admin`。初始密码在 `/opt/piccove/.env` 的 `PICCOVE_ADMIN_PASSWORD` 中；不要提交或分享此文件。登录后在账号设置中修改密码。已有管理员不会因重启或更改初始化变量而被重置。
@@ -84,7 +84,7 @@ ssh -L 8080:127.0.0.1:8080 your-user@your-server
 2. 使用引导脚本，填写真实域名与联系入口：
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin https://img.example.com --port 8080 --contact mailto:admin@example.com --non-interactive
+   curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin https://img.example.com --port 8080 --contact mailto:admin@example.com
    ```
 
 3. 在**该域名已有的 HTTPS server 块**中，把流量反向代理到安装时的本机端口。例如：
@@ -167,7 +167,7 @@ sudo piccovectl status
 sudo piccovectl health
 sudo piccovectl logs
 sudo piccovectl backup --backup /var/backups/piccove/本次新目录  # 手动，可选
-sudo piccovectl update --non-interactive
+sudo piccovectl update
 ```
 
 升级保持同一安装目录、配置和数据卷，成功后清理废弃程序文件及无引用旧镜像，不保留历史程序版本，不生成自动备份。手动备份不会自动删除。升级失败保留记录并停止应用，不自动回退数据库或二进制。详见[运维说明](docs/OPERATIONS.md)与[备份恢复](docs/BACKUP.md)。

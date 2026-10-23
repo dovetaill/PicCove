@@ -3,8 +3,8 @@
 set -eu
 case ${1:-} in
     -h|--help)
-        echo 'sh install-server.sh install --origin https://你的域名 --non-interactive'
-        echo 'sh install-server.sh update --non-interactive'
+        echo 'sh install-server.sh install --origin https://你的域名'
+        echo 'sh install-server.sh update'
         echo '可选：--version X.Y.Z；其他参数传给 piccovectl。需要 Docker Engine、Compose、Buildx、curl、sha256sum。'
         exit 0 ;;
     install|update|upgrade) ;;

@@ -5,32 +5,34 @@
 ## 首次安装
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin https://img.example.com --non-interactive
+curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- install --origin https://img.example.com
 ```
 
 默认安装到 `/opt/piccove`，本机监听 `127.0.0.1:18081`，Compose 项目名 `piccove-tu`。安装后创建 `/usr/local/bin/piccovectl` 链接。初始管理员为 `admin`，随机密码保存在安装目录 `.env`（0600），不会输出到日志。登录后可修改用户名、密码，设置二步验证和 Passkey。
 
 域名、HTTPS 与宿主机反向代理仍按 [部署说明](DEPLOY-tu.jpggg.com.md) 配置。安装器不修改宿主机 Nginx、文件权限或防火墙。`--origin` 是实际访问地址，无路径和末尾斜杠；本地试用可用 `http://127.0.0.1:18081`。
 
-自定义实例可指定 `--directory /绝对路径 --project 独立项目名 --port 独立端口`。自定义目录使用 `/安装目录/bin/piccovectl --directory /安装目录`，或在该目录执行 `sh piccove.sh`。现有安装目录拒绝重复安装。
+自定义实例可指定 `--directory /绝对路径 --project 独立项目名 --port 独立端口`。自定义目录使用 `/安装目录/bin/piccovectl`（自动识别安装目录），或在该目录执行 `sh piccove.sh`。现有安装目录拒绝重复安装。
 
 ## 升级和日常管理
 
 ```sh
-sudo piccovectl                         # 中文菜单
+sudo piccovectl                         # 方向键选择、回车执行、数字快捷键；Ctrl+C 退出
 sudo piccovectl status
 sudo piccovectl health                  # API、网页、JS/CSS 完整传输
 sudo piccovectl logs                    # 最近 100 行
 sudo piccovectl restart
-sudo piccovectl stop --non-interactive
+sudo piccovectl stop
 sudo piccovectl start
-sudo piccovectl update --non-interactive
+sudo piccovectl update
 ```
+
+命令直接执行，无需额外确认参数；菜单中的停止和升级会询问确认。安装目录从运维程序实际位置自动识别，无法识别时使用 `/opt/piccove`，通常无需指定目录。
 
 `update`（别名 `upgrade`）默认下载最新稳定 GitHub Release；可用 `--version X.Y.Z` 固定版本。旧安装还没有 `piccovectl` 时，用引导命令升级：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- update --non-interactive
+curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/install-server.sh | sudo sh -s -- update
 ```
 
 升级原地更新程序，保留 `.env`、数据库和原图卷。**不自动备份，不保留历史程序版本。** 新版通过健康和资源检查后，删除旧清单中已废弃且内容未变的程序文件，以及本次替换后不再被任何容器或标签引用的旧 API／Web 镜像。下载目录和独占构建缓存随操作清理；不会执行全局 Docker prune，也不会删除手动备份、用户指定的本地包或 GitHub 上的历史 Release。
@@ -40,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/dovetaill/PicCove/main/scripts/inst
 无需联网下载时，可提供可信本地包和同目录的 `SHA256SUMS`：
 
 ```sh
-sudo piccovectl update --archive /path/to/piccove-vX.Y.Z-linux-x86_64.tar.gz --non-interactive
+sudo piccovectl update --archive /path/to/piccove-vX.Y.Z-linux-x86_64.tar.gz
 ```
 
 SHA-256 用于验证传输与内容一致性，来源信任仍依赖 GitHub 仓库及 HTTPS。程序拒绝降级、同版本不同提交、符号链接／穿越归档、非程序路径和非本安装拥有的 Compose 项目。运维锁避免同一安装同时运行变更；不要同时手工操作 Compose。

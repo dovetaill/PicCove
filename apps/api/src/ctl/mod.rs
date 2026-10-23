@@ -1,3 +1,4 @@
+mod terminal;
 mod web;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -50,7 +51,8 @@ struct Args {
 impl Args {
     fn parse(words: impl Iterator<Item = String>) -> Result<Self> {
         let mut result = Self {
-            directory: "/opt/piccove".into(),
+            directory: installation_directory(std::env::current_exe().ok().as_deref()),
+            yes: true,
             port: 18081,
             project: "piccove-tu".into(),
             ..Self::default()
@@ -129,6 +131,15 @@ impl Args {
         );
         Ok(result)
     }
+}
+fn installation_directory(executable: Option<&Path>) -> PathBuf {
+    executable
+        .and_then(Path::parent)
+        .filter(|p| p.file_name().is_some_and(|n| n == "bin"))
+        .and_then(Path::parent)
+        .filter(|p| p.join("compose.yml").is_file() && p.join("release.json").is_file())
+        .unwrap_or(Path::new("/opt/piccove"))
+        .to_path_buf()
 }
 #[derive(Serialize, Deserialize)]
 struct Manifest {
@@ -591,22 +602,27 @@ fn health(rt: &Runtime, root: &Path) -> Result<()> {
     println!("本机 API、网页及 JS/CSS 完整传输检查通过。");
     Ok(())
 }
-fn confirm(args: &Args) -> Result<()> {
+fn confirm(rt: &Runtime, args: &Args) -> Result<()> {
     if args.yes {
         return Ok(());
     }
-    use std::io::IsTerminal;
-    ensure!(
-        io::stdin().is_terminal(),
-        "非交互执行请加 --non-interactive"
-    );
-    println!("将执行 {}。输入 yes 继续：", args.action);
     if matches!(args.action.as_str(), "update" | "upgrade") {
         println!("升级成功后不保留历史程序版本，也不自动备份；需要备份请先执行 backup。");
     }
-    let mut s = String::new();
-    io::stdin().read_line(&mut s)?;
-    ensure!(s.trim() == "yes", "已取消");
+    print!("确认继续？[y/N]：");
+    io::stdout().flush()?;
+    let terminal = terminal::Terminal::open()?;
+    loop {
+        match terminal.key(&rt.cancelled)? {
+            terminal::Key::Character(b'y' | b'Y') => {
+                println!("y");
+                break;
+            }
+            terminal::Key::Character(b'n' | b'N') | terminal::Key::Enter => bail!("已取消"),
+            terminal::Key::Exit => bail!("操作已中断"),
+            _ => (),
+        }
+    }
     Ok(())
 }
 fn environment(args: &Args) -> Result<String> {
@@ -878,7 +894,7 @@ fn install(rt: &Runtime, args: &Args, bundle: &Path, manifest: &Manifest) -> Res
         "安装目录已存在，请使用 update 或 start"
     );
     let env = environment(args)?;
-    confirm(args)?;
+    confirm(rt, args)?;
     create_program_dirs(args.directory.parent().context("安装目录无父目录")?)?;
     fs::create_dir(&args.directory)?;
     fs::set_permissions(&args.directory, fs::Permissions::from_mode(0o755))?;
@@ -933,7 +949,7 @@ fn update(rt: &Runtime, args: &Args, bundle: &Path, new: &Manifest) -> Result<()
         println!("已是 {}，无需升级。", new.version);
         return Ok(());
     }
-    confirm(args)?;
+    confirm(rt, args)?;
     // Legacy installs have no file manifest: only infer immutable, application-owned web assets.
     let mut old_files = old.files.clone();
     if old_files.is_empty() && root.join("web/assets").is_dir() {
@@ -1151,7 +1167,7 @@ fn backup(rt: &Runtime, args: &Args) -> Result<()> {
 }
 fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
     if ["help", ""].contains(&args.action.as_str()) {
-        println!("piccovectl install --origin https://域名 [--non-interactive]\npiccovectl update [--version X.Y.Z | --archive 包路径] [--non-interactive]\npiccovectl status|start|stop|restart|logs|health\npiccovectl backup [--backup 新目录]\npiccovectl web-manager --directory /opt/piccove\npiccovectl menu\n通用参数：--directory /opt/piccove。仅 Linux x86_64；依赖 Docker Compose。安装／升级不依赖 Python 或 Rust 工具链。升级成功不保留历史程序版本、不自动备份。");
+        println!("piccovectl                              打开中文运维菜单\npiccovectl update                       更新到最新稳定版并重启\npiccovectl status|start|stop|restart|logs|health\npiccovectl backup                       手动备份\npiccovectl install --origin https://域名\npiccovectl web-manager\n自动识别程序所在的安装目录，默认 /opt/piccove。命令直接执行，无需确认参数。\n高级选项：--directory 其他实例目录；update --version X.Y.Z 或 --archive 包路径；backup --backup 新目录。\n仅 Linux x86_64；依赖 Docker Compose。升级成功不保留历史程序版本、不自动备份。");
         return Ok(());
     }
     if args.action == "web-manager" {
@@ -1200,7 +1216,7 @@ fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
             "start" => vec!["up", "-d", "--wait", "--wait-timeout", "120"],
             "restart" => vec!["restart", "api", "web"],
             "stop" => {
-                confirm(args)?;
+                confirm(rt, args)?;
                 vec!["stop"]
             }
             _ => bail!("未知操作"),
@@ -1210,28 +1226,30 @@ fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
     }
 }
 fn menu(rt: &Runtime, root: &Path) -> Result<()> {
-    use std::io::IsTerminal;
-    ensure!(
-        io::stdin().is_terminal(),
-        "菜单需要交互终端；脚本请指定子命令"
-    );
+    let mut selected = 0;
     loop {
-        println!("\nPicCove 运维\n1 状态  2 启动  3 停止  4 重启  5 日志  6 健康检查  7 手动备份  8 升级\n0 退出");
-        let mut input = String::new();
-        ensure!(io::stdin().read_line(&mut input)? > 0, "输入已关闭");
-        let action = match input.trim() {
-            "0" => return Ok(()),
-            "1" => "status",
-            "2" => "start",
-            "3" => "stop",
-            "4" => "restart",
-            "5" => "logs",
-            "6" => "health",
-            "7" => "backup",
-            "8" => "update",
-            _ => continue,
+        if rt.cancelled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let installed = fs::read(root.join("release.json"))
+            .ok()
+            .and_then(|data| serde_json::from_slice::<Manifest>(&data).ok())
+            .map(|m| m.version)
+            .unwrap_or_else(|| "未安装或版本信息不可读".into());
+        let status = match config(rt, root)
+            .and_then(|_| rt.compose(root, &["ps", "--format", "{{.Service}}: {{.Status}}"], None))
+        {
+            Ok(status) => status.trim_end().to_string(),
+            Err(e) => format!("  服务状态不可用：{e}"),
         };
-        let args = Args::parse(
+        if rt.cancelled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let Some(index) = terminal::select(rt, root, &installed, &status, &mut selected)? else {
+            return Ok(());
+        };
+        let (action, label) = terminal::ITEMS[index];
+        let mut args = Args::parse(
             [
                 action.to_string(),
                 "--directory".into(),
@@ -1239,11 +1257,28 @@ fn menu(rt: &Runtime, root: &Path) -> Result<()> {
             ]
             .into_iter(),
         )?;
-        if let Err(e) = dispatch(rt, &args) {
-            eprintln!("操作失败：{e:#}");
+        args.yes = false;
+        println!("\n── {label} ──");
+        match dispatch(rt, &args) {
+            Ok(()) => println!("操作完成。"),
+            Err(e) => eprintln!("操作失败：{e:#}"),
+        }
+        if rt.cancelled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        print!("\n按回车返回菜单，Ctrl+C 退出…");
+        io::stdout().flush()?;
+        let terminal = terminal::Terminal::open()?;
+        loop {
+            match terminal.key(&rt.cancelled)? {
+                terminal::Key::Enter => break,
+                terminal::Key::Exit => return Ok(()),
+                _ => (),
+            }
         }
     }
 }
+
 pub fn run() -> Result<()> {
     let mut args = Args::parse(std::env::args().skip(1))?;
     if args.action.is_empty() {
@@ -1256,6 +1291,16 @@ mod tests {
     use super::*;
     #[test]
     fn arguments_and_versions() {
+        let update = Args::parse(["update"].into_iter().map(str::to_string)).unwrap();
+        assert!(update.version.is_none());
+        assert!(update.yes);
+        assert!(confirm(
+            &Runtime {
+                cancelled: Arc::new(AtomicBool::new(false))
+            },
+            &update
+        )
+        .is_ok());
         assert!(version("1.2.3").is_ok());
         for v in ["1.2", "01.2.3", "1.2.3/../x", "-1.2.3"] {
             assert!(version(v).is_err());
@@ -1267,6 +1312,26 @@ mod tests {
                 .map(str::to_string)
         )
         .is_err());
+    }
+    #[test]
+    fn detects_installation_from_executable_not_working_directory() {
+        let t = tempfile::tempdir().unwrap();
+        let executable = t.path().join("bin/piccovectl");
+        assert_eq!(
+            installation_directory(Some(&executable)),
+            Path::new("/opt/piccove")
+        );
+        fs::write(t.path().join("compose.yml"), "fixture").unwrap();
+        fs::write(t.path().join("release.json"), "fixture").unwrap();
+        assert_eq!(installation_directory(Some(&executable)), t.path());
+        assert_eq!(installation_directory(None), Path::new("/opt/piccove"));
+        let args = Args::parse(
+            ["update", "--directory", "/srv/other"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(args.directory, Path::new("/srv/other"));
     }
     #[test]
     fn rejects_ignored_options() {
