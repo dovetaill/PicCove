@@ -7,7 +7,7 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use webauthn_rs::prelude::*;
 
 pub struct Security {
-    webauthn: Webauthn,
+    webauthn: Option<Webauthn>,
     challenges: Mutex<HashMap<Uuid, Challenge>>,
 }
 enum Ceremony {
@@ -26,13 +26,24 @@ struct Challenge {
 impl Security {
     pub fn new(origin: &str) -> anyhow::Result<Self> {
         let url = Url::parse(origin)?;
-        let rp = url.host_str().context("CORS_ORIGIN requires a hostname")?;
+        url.host_str().context("CORS_ORIGIN requires a hostname")?;
+        let webauthn = url
+            .domain()
+            .map(|rp| {
+                WebauthnBuilder::new(rp, &url)?
+                    .rp_name("PicCove 图湾")
+                    .build()
+            })
+            .transpose()?;
         Ok(Self {
-            webauthn: WebauthnBuilder::new(rp, &url)?
-                .rp_name("PicCove 图湾")
-                .build()?,
+            webauthn,
             challenges: Mutex::new(HashMap::new()),
         })
+    }
+    fn webauthn(&self) -> ApiResult<&Webauthn> {
+        self.webauthn
+            .as_ref()
+            .ok_or_else(|| bad("Passkey 需要通过域名或 localhost 使用；IP 地址请使用密码登录"))
     }
     async fn insert(&self, user: User, ceremony: Ceremony) -> ApiResult<Uuid> {
         let mut pending = self.challenges.lock().await;
@@ -307,7 +318,7 @@ async fn register_start(
     }
     let (options, registration) = state
         .security
-        .webauthn
+        .webauthn()?
         .start_passkey_registration(
             user.id,
             &user.username,
@@ -357,7 +368,7 @@ async fn register_finish(
     }
     let key = state
         .security
-        .webauthn
+        .webauthn()?
         .finish_passkey_registration(&input.credential, &registration)
         .map_err(|_| bad("Passkey 验证失败"))?;
     let mut tx = state.pool.begin().await.map_err(internal)?;
@@ -441,7 +452,7 @@ async fn login_start(
     }
     let (options, authentication) = state
         .security
-        .webauthn
+        .webauthn()?
         .start_passkey_authentication(&registered)
         .map_err(internal)?;
     let id = state
@@ -467,7 +478,7 @@ async fn login_finish(
     };
     let result = state
         .security
-        .webauthn
+        .webauthn()?
         .finish_passkey_authentication(&input.credential, &authentication)
         .map_err(|_| unauthorized())?;
     let mut tx = state.pool.begin().await.map_err(internal)?;
@@ -536,8 +547,22 @@ mod tests {
     }
     #[test]
     fn rp_uses_configured_origin() {
-        assert!(Security::new("https://photos.example.com").is_ok());
-        assert!(Security::new("http://localhost:5173").is_ok());
+        assert!(Security::new("https://photos.example.com")
+            .unwrap()
+            .webauthn()
+            .is_ok());
+        assert!(Security::new("http://localhost:5173")
+            .unwrap()
+            .webauthn()
+            .is_ok());
+        assert!(Security::new("http://127.0.0.1:5173")
+            .unwrap()
+            .webauthn()
+            .is_err());
+        assert!(Security::new("http://[::1]:5173")
+            .unwrap()
+            .webauthn()
+            .is_err());
         assert!(Security::new("not a url").is_err());
     }
 }
