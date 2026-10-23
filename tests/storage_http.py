@@ -91,16 +91,16 @@ def main():
                 time.sleep(.1)
         raise AssertionError('API start timeout')
 
-    def png():
+    def png(color=b'\x20\x80\x40'):
         def chunk(kind, data):
             return struct.pack('!I', len(data)) + kind + data + struct.pack('!I', zlib.crc32(kind + data))
-        pixels = b''.join(b'\0' + b'\x20\x80\x40' * 800 for _ in range(600))
+        pixels = b''.join(b'\0' + color * 800 for _ in range(600))
         return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!IIBBBBB', 800, 600, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(pixels)) + chunk(b'IEND', b'')
 
     image_bytes = png()
 
     def upload(private=False):
-        body = b'--storage-test\r\nContent-Disposition: form-data; name="file"; filename="test.png"\r\nContent-Type: image/png\r\n\r\n' + image_bytes + b'\r\n--storage-test--\r\n'
+        body = b'--storage-test\r\nContent-Disposition: form-data; name="file"; filename="test.png"\r\nContent-Type: image/png\r\n\r\n' + (png(b'\x40\x80\x20') if private else image_bytes) + b'\r\n--storage-test--\r\n'
         return request(user, '/api/v1/images' + ('?private=true' if private else ''), 'POST', body, 201)
 
     def path(url):
@@ -137,6 +137,22 @@ def main():
         source_id = next(v['id'] for v in locations if v['default'])
         target_id = next(v['id'] for v in locations if v['path'] == str(target))
         public, private = upload(), upload(True)
+        sql(f"UPDATE images SET content_hash=NULL WHERE id='{public['id']}'")
+        duplicate_body = b'--storage-test\r\nContent-Disposition: form-data; name="file"; filename="duplicate.png"\r\nContent-Type: image/png\r\n\r\n' + image_bytes + b'\r\n--storage-test--\r\n'
+        missing_file = original / path(public['url']).removeprefix('/i/')
+        held_file = missing_file.with_suffix('.held')
+        missing_file.rename(held_file)
+        try:
+            replacement = request(user, '/api/v1/images', 'POST', duplicate_body, 201)
+            assert replacement['id'] != public['id'] and not replacement.get('duplicate')
+            assert request(anonymous, path(replacement['url']), raw=True) == image_bytes
+            request(user, '/api/v1/images/' + replacement['id'], 'DELETE', expected=204)
+        finally:
+            held_file.rename(missing_file)
+        assert missing_file.read_bytes() == image_bytes
+        reused = request(user, '/api/v1/images', 'POST', duplicate_body, 200)
+        assert reused['duplicate'] and reused['id'] == public['id']
+        assert len(request(user, '/api/v1/images')['items']) == 2
         old_url = path(public['url'])
         assert request(anonymous, old_url, raw=True) == image_bytes
         assert request(anonymous, '/i/' + public['id'], raw=True) == image_bytes
@@ -156,7 +172,7 @@ def main():
         wait_job(job_id)
         assert request(anonymous, old_url, raw=True) == image_bytes
         assert request(anonymous, '/i/' + public['id'], raw=True) == image_bytes
-        assert request(user, path(private['url']), raw=True) == image_bytes
+        assert request(user, path(private['url']), raw=True) == png(b'\x40\x80\x20')
         request(anonymous, path(private['url']), expected=404)
         relative = old_url.removeprefix('/i/')
         assert (original / relative).read_bytes() == (target / relative).read_bytes() == image_bytes

@@ -1,8 +1,7 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { api, useMe } from './api';
 import { passkey } from './passkey';
@@ -18,6 +17,23 @@ export function AccountSecurity() {
       ),
   });
   const [busy, setBusy] = useState(false);
+  const totpConfirm = useRef<HTMLButtonElement>(null);
+  const addPasskey = useRef<HTMLButtonElement>(null);
+  function handleEnter(event: KeyboardEvent<HTMLFormElement>) {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
+      return;
+    if (event.key !== 'Enter' || !(event.target instanceof HTMLInputElement))
+      return;
+    if (event.target.name === 'name') {
+      event.preventDefault();
+      addPasskey.current?.click();
+    } else if (event.target.name === 'code') {
+      event.preventDefault();
+      if (pending && !security.data?.totp_enabled) totpConfirm.current?.click();
+    } else if (event.target.name !== 'username') {
+      event.preventDefault();
+    }
+  }
   const [pending, setPending] = useState<{
     secret: string;
     uri: string;
@@ -26,10 +42,20 @@ export function AccountSecurity() {
     event.preventDefault();
     if (busy) return;
     const form = event.currentTarget;
-    const values = new FormData(form);
     const action = (event.nativeEvent as SubmitEvent).submitter?.getAttribute(
       'value',
     );
+    if (!action) return;
+    const fields = ['current_password'];
+    if (security.data?.totp_enabled || action === 'totp-confirm')
+      fields.push('code');
+    if (action === 'username') fields.push('username');
+    if (action === 'passkey') fields.push('name');
+    for (const name of fields) {
+      const input = form.elements.namedItem(name) as HTMLInputElement | null;
+      if (!input || !input.reportValidity()) return;
+    }
+    const values = new FormData(form);
     const proof = {
       current_password: values.get('current_password'),
       code: values.get('code') || '',
@@ -59,7 +85,7 @@ export function AccountSecurity() {
       } else if (action?.startsWith('remove:')) {
         if (
           !window.confirm(
-            '确认删除此 Passkey？请确认仍能使用其他 Passkey 或密码和验证码登录。',
+            `确认删除 Passkey“${security.data?.passkeys.find((key) => action === `remove:${key.id}`)?.name || '未知设备'}”？删除后将无法使用这枚通行密钥登录。请确认还可以使用其他通行密钥或密码；如果开启了二步验证，还需要验证码。`,
           )
         )
           return;
@@ -73,7 +99,14 @@ export function AccountSecurity() {
           ? '请在验证器中添加密钥，然后输入验证码确认'
           : '账号安全设置已更新',
       );
-      if (action !== 'totp-start') form.reset();
+      if (action !== 'totp-start') {
+        for (const name of fields.filter((name) => name !== 'username')) {
+          const input = form.elements.namedItem(
+            name,
+          ) as HTMLInputElement | null;
+          if (input) input.value = '';
+        }
+      }
       await client.invalidateQueries();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '操作失败');
@@ -90,14 +123,17 @@ export function AccountSecurity() {
       </p>
     );
   return (
-    <form className="cove-security cove-form" onSubmit={submit}>
-      <Card>
-        <CardHeader>
-          <CardTitle>身份确认</CardTitle>
-        </CardHeader>
-        <CardContent className="cove-form">
+    <form
+      className="cove-security"
+      noValidate
+      onSubmit={submit}
+      onKeyDown={handleEnter}
+    >
+      <section className="cove-account-section">
+        <h2>身份确认</h2>
+        <div className="cove-form">
           <p className="cove-muted">
-            修改下方设置前请输入当前密码；已开启二步验证时还需动态验证码。保存后其他设备需重新登录。
+            修改用户名或验证方式前，请在这里输入当前密码；开启二步验证后还需验证码。更新成功后，其他设备需要重新登录。修改密码请使用下方对应表单。
           </p>
           <label>
             当前密码
@@ -122,17 +158,16 @@ export function AccountSecurity() {
               />
             </label>
           )}
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>用户名</CardTitle>
-        </CardHeader>
-        <CardContent className="cove-form">
+        </div>
+      </section>
+      <section className="cove-account-section">
+        <h2>用户名</h2>
+        <div className="cove-form">
           <label>
             登录用户名
             <Input
               name="username"
+              required
               defaultValue={me.data?.user.username}
               minLength={3}
               maxLength={32}
@@ -141,34 +176,37 @@ export function AccountSecurity() {
             />
           </label>
           <p className="cove-muted">
-            默认 admin 也可以修改。账号权限、图片和相册保持不变。
+            使用 3–32
+            位字母、数字、下划线或短横线。修改后用新用户名登录，图片、相册和账号权限都不受影响。
           </p>
           <Button type="submit" name="action" value="username" disabled={busy}>
             保存用户名
           </Button>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>二步验证（验证器）</CardTitle>
-        </CardHeader>
-        <CardContent className="cove-form">
+        </div>
+      </section>
+      <section className="cove-account-section">
+        <h2>二步验证（验证器）</h2>
+        <div className="cove-form">
           <p>
             {security.data.totp_enabled
-              ? '已开启：密码登录需要六位动态验证码。'
-              : '尚未开启：绑定验证器后，密码登录需要额外输入动态验证码。'}
+              ? '已开启。使用密码登录时，还需要输入验证器中的六位验证码。'
+              : '尚未开启。绑定验证器后，登录时会在密码之外再核对一次验证码。'}
           </p>
           {pending && (
             <div className="cove-form">
               <p>
-                在验证器中选择手动添加，类型选“基于时间”，输入以下密钥。请妥善保存在密码管理器中，以备恢复使用；10
-                分钟内输入验证码确认。
+                在验证器中选择“手动添加”，类型选择“基于时间”，填入下方密钥。请在
+                10
+                分钟内输入验证码，完成绑定。建议将密钥保存在密码管理器中，换设备时可以恢复使用。
               </p>
               <code className="break-all select-all">{pending.secret}</code>
               <a href={pending.uri}>在本机验证器中打开</a>
             </div>
           )}
           <Button
+            ref={
+              pending && !security.data.totp_enabled ? totpConfirm : undefined
+            }
             type="submit"
             name="action"
             value={
@@ -187,16 +225,35 @@ export function AccountSecurity() {
                 ? '确认开启二步验证'
                 : '绑定验证器'}
           </Button>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Passkey 通行密钥</CardTitle>
-        </CardHeader>
-        <CardContent className="cove-form">
+          {pending && !security.data.totp_enabled && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="submit"
+                name="action"
+                value="totp-start"
+                variant="outline"
+                disabled={busy}
+              >
+                重新绑定
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => setPending(null)}
+              >
+                取消绑定
+              </Button>
+            </div>
+          )}
+        </div>
+      </section>
+      <section className="cove-account-section">
+        <h2>Passkey 通行密钥</h2>
+        <div className="cove-form">
           <p className="cove-muted">
-            绑定后优先使用设备指纹、面容或 PIN
-            登录；仍可选择密码＋二步验证。建议保留可用的验证器或另一枚 Passkey。
+            用指纹、面容或设备 PIN
+            登录，省去输入密码。仍可切换为密码登录；若开启了二步验证，还需验证码。建议保留另一种可用的登录方式。
           </p>
           {security.data.passkeys.map((key) => (
             <div className="cove-setting" key={key.id}>
@@ -206,6 +263,7 @@ export function AccountSecurity() {
                 name="action"
                 value={`remove:${key.id}`}
                 variant="outline"
+                aria-label={`删除 Passkey ${key.name}`}
                 disabled={busy}
               >
                 删除
@@ -216,11 +274,17 @@ export function AccountSecurity() {
             新 Passkey 名称
             <Input name="name" placeholder="例如：我的手机" maxLength={100} />
           </label>
-          <Button type="submit" name="action" value="passkey" disabled={busy}>
+          <Button
+            ref={addPasskey}
+            type="submit"
+            name="action"
+            value="passkey"
+            disabled={busy}
+          >
             添加 Passkey
           </Button>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </form>
   );
 }

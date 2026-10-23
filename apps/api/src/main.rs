@@ -506,7 +506,7 @@ async fn upload_image(
     rate(&state, format!("upload:{}", user.id), 60, 60).await?;
     let _guard = state.uploads.try_lock().map_err(|_| {
         ApiError(
-            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::SERVICE_UNAVAILABLE,
             "正在处理其他图片，请稍后重试".into(),
         )
     })?;
@@ -532,6 +532,44 @@ async fn upload_image(
         upload = Some((name, bytes));
     }
     let (original_name, bytes) = upload.ok_or_else(|| bad("缺少图片"))?;
+    let digest = storage::hash(&bytes);
+    // Older images acquire their digest lazily; duplicate uploads retain the original visibility and album.
+    let candidates: Vec<ImageRow> = sqlx::query_as(
+        "SELECT * FROM images WHERE user_id=$1 AND size_bytes=$2 AND deleted_at IS NULL AND (content_hash=$3 OR content_hash IS NULL) ORDER BY created_at,id",
+    )
+    .bind(user.id)
+    .bind(bytes.len() as i64)
+    .bind(&digest)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+    for existing in candidates {
+        let location = storage::image_location(&state, &existing).await?;
+        let key = existing.storage_key.clone();
+        let existing_hash = tokio::task::spawn_blocking(move || {
+            let dir = location.open()?;
+            match dir.read(&key) {
+                Ok((data, _)) => Ok(Some(storage::hash(&data))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(storage::io_error(error)),
+            }
+        })
+        .await
+        .map_err(internal)??;
+        if let Some(existing_hash) = existing_hash {
+            sqlx::query("UPDATE images SET content_hash=$1 WHERE id=$2")
+                .bind(&existing_hash)
+                .bind(existing.id)
+                .execute(&state.pool)
+                .await
+                .map_err(internal)?;
+            if existing_hash == digest {
+                let mut result = image_dto(existing, &state);
+                result["duplicate"] = serde_json::json!(true);
+                return Ok((StatusCode::OK, Json(result)));
+            }
+        }
+    }
     let row = store_image(
         &state,
         user.id,
@@ -599,8 +637,8 @@ async fn store_image(
         }
     }
     // Keep a pending row until the file is durable; interrupted uploads remain identifiable for cleanup.
-    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public,storage_root,album_id,import_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10,$11,$12) RETURNING *")
-        .bind(id).bind(user_id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(is_public).bind(&location.path).bind(album_id).bind(import_key).fetch_one(&mut *tx).await.map_err(internal)?;
+    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public,storage_root,album_id,import_key,content_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10,$11,$12,$13) RETURNING *")
+        .bind(id).bind(user_id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(is_public).bind(&location.path).bind(album_id).bind(import_key).bind(storage::hash(&bytes)).fetch_one(&mut *tx).await.map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     let key = row.storage_key.clone();
     tokio::task::spawn_blocking(move || dir.write_new(&key, &bytes))

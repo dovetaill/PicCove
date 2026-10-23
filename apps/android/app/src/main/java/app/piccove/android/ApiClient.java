@@ -40,7 +40,7 @@ final class ApiClient {
         body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
         JSONObject result = new JSONObject(new String(exchange("POST", "/api/v1/images?private=true", body.toByteArray(),
                 "multipart/form-data; boundary=" + boundary, 2 * 1024 * 1024), StandardCharsets.UTF_8));
-        if (!result.has("is_public") || result.getBoolean("is_public")) throw new IOException("服务端未按私有图片保存，请停止上传并检查服务端版本");
+        if (!result.has("is_public") || (result.getBoolean("is_public") && !result.optBoolean("duplicate"))) throw new IOException("服务端未按私有图片保存，请停止上传并检查服务端版本");
         return result;
     }
     void clear() { cookies.getCookieStore().removeAll(); }

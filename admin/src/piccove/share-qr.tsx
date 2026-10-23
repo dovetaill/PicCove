@@ -36,17 +36,19 @@ export function ShareQr({
         if (!open) onClose();
       }}
     >
-      <DialogContent>
+      <DialogContent className="cove-qr-dialog">
         <DialogHeader>
           <DialogTitle>二维码分享</DialogTitle>
           <DialogDescription>
-            扫码打开原图。二维码在本地生成，持有码者可访问公开图片。
+            扫描二维码即可查看原图。任何拿到二维码的人都能打开这张图片。
           </DialogDescription>
         </DialogHeader>
         {!allowed ? (
           <p role="alert">仅可分享未删除的公开图片。</p>
         ) : !fits ? (
-          <p role="alert">图片地址过长，请使用直链分享。</p>
+          <p role="alert">
+            图片链接太长，无法生成二维码。请返回图库复制链接分享。
+          </p>
         ) : (
           <>
             <QRCodeSVG

@@ -321,7 +321,7 @@ public class MainActivity extends Activity {
         else if(data.getData()!=null)selected.add(data.getData());
         if(selected.isEmpty())return;
         final String destination=albumId;
-        final ArrayList<String> failures=new ArrayList<>();final int[] saved={0};
+        final ArrayList<String> failures=new ArrayList<>();final ArrayList<String> reused=new ArrayList<>();final int[] saved={0};
         perform("正在上传 0 / "+selected.size(),()->{
             for(int i=0;i<selected.size();i++) {
                 if(Thread.currentThread().isInterrupted())break;
@@ -336,7 +336,9 @@ public class MainActivity extends Activity {
                         if(stream==null)throw new Exception("无法读取照片");bytes=ApiClient.readLimited(stream,ApiClient.MAX_IMAGE);
                     }
                     JSONObject photo=api.upload(name==null?"photo":name,bytes);saved[0]++;
-                    if(destination!=null)try {
+                    if(photo.optBoolean("duplicate")) {
+                        reused.add(name+"：已复用“"+photo.getString("original_name")+"”，保留原相册；"+(photo.getBoolean("is_public")?"原图片仍公开，持有链接即可访问。":"原图片仍为私有。"));
+                    } else if(destination!=null)try {
                         api.json("PATCH","/images/"+photo.getString("id"),new JSONObject().put("original_name",photo.getString("original_name")).put("album_id",destination));
                     } catch(Exception e) {failures.add(name+"：已上传到全部照片，移入相册失败");}
                 }catch(Exception e){failures.add(name+"："+e.getMessage());}
@@ -344,7 +346,7 @@ public class MainActivity extends Activity {
             }
         },()->{
             new AlertDialog.Builder(this).setTitle("已上传 "+saved[0]+" / "+selected.size()+" 张")
-                .setMessage(failures.isEmpty()?"照片已私有保存。":String.join("\n",failures))
+                .setMessage((saved[0]>reused.size()?"新上传的照片已私有保存。\n":"")+String.join("\n",reused)+(reused.isEmpty()||failures.isEmpty()?"":"\n")+String.join("\n",failures))
                 .setPositiveButton("完成",(d,w)->{page=1;refresh();}).setCancelable(false).show();
         });
     }

@@ -88,6 +88,14 @@ upload(alice, png()[:40], 400)
 upload(alice, b'x' * (10 * 1024 * 1024 + 1), 400)
 pixels = png(1000, 1000)
 image = upload(alice, pixels)
+duplicate = upload(alice, pixels, expected=200, private=True)
+assert duplicate['duplicate'] and duplicate['id'] == image['id']
+assert duplicate['url'] == image['url'] and duplicate['is_public'] is True
+assert len(request(alice, '/api/v1/images')['items']) == 1
+assert request(alice, '/api/v1/me')['used_bytes'] == len(pixels)
+other_account = upload(bob, pixels)
+assert other_account['id'] != image['id']
+request(bob, '/api/v1/images/' + other_account['id'], 'DELETE', expected=204)
 image_path = '/api/v1/images/' + image['id']
 public_path = '/i/' + image['id']
 assert request(anonymous, public_path, raw=True) == pixels
@@ -97,7 +105,10 @@ assert request(anonymous, dated_path, raw=True) == pixels
 request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/data'}, 400)
 assert image['is_public'] is True
 assert request(anonymous, '/api/v1/settings')['private_images'] is True
-private = upload(alice, png(), private=True)
+private_pixels = png()
+private = upload(alice, private_pixels, private=True)
+private_duplicate = upload(alice, private_pixels, expected=200)
+assert private_duplicate['id'] == private['id'] and private_duplicate['is_public'] is False
 assert private['is_public'] is False
 private_path = '/i/' + private['id']
 visibility_path = '/api/v1/images/' + private['id'] + '/visibility'
@@ -128,6 +139,7 @@ assert request(alice, '/api/v1/images')['items'][0]['album_id'] is None
 assert request(anonymous, public_path, raw=True) == pixels
 request(admin, '/api/v1/admin/users/' + a['id'], 'PATCH', {'quota_bytes': len(pixels), 'disabled': False}, 204)
 upload(alice, png(), 400)
+assert upload(alice, pixels, expected=200)['id'] == image['id']
 assert request(anonymous, public_path, raw=True) == pixels
 request(admin, '/api/v1/admin/users/' + a['id'], 'PATCH', {'quota_bytes': 1073741824, 'disabled': True}, 204)
 request(alice, '/api/v1/me', expected=401)
@@ -141,6 +153,8 @@ request(alice, '/api/v1/me', expected=401)
 login(alice, 'alice')
 request(admin, image_path, 'DELETE', expected=204)
 request(anonymous, public_path, expected=404)
+request(anonymous, urlsplit(duplicate['url']).path, expected=404)
+request(anonymous, urlsplit(image['thumbnail_url']).path, expected=404)
 assert request(alice, '/api/v1/me')['used_bytes'] == 0
 # Leave one image for the isolated backup/restore verification.
 kept = upload(bob, png(20, 20))

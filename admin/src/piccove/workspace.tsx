@@ -1,4 +1,10 @@
-import { useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
@@ -37,6 +43,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import {
   api,
   imageLink,
@@ -52,6 +59,7 @@ import { Brand } from './public';
 import { AccountSecurity } from './security';
 import { ShareQr } from './share-qr';
 import { SystemSettings } from './system';
+import { UploadProvider, useUploads } from './upload-manager';
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : '操作失败';
@@ -109,104 +117,107 @@ export function Workspace() {
     <div
       className={`demo1 sidebar-fixed header-fixed cove-workspace${collapsed ? ' cove-collapsed' : ''}`}
     >
-      <aside
-        id="workspace-navigation"
-        className={`sidebar cove-sidebar${menuOpen ? ' is-open' : ''}`}
-        aria-label="工作台导航"
-      >
-        <Brand />
-        <span className="cove-nav-label">我的空间</span>
-        <nav
-          onClick={(event) => {
-            if ((event.target as HTMLElement).closest('a')) setMenuOpen(false);
-          }}
+      <UploadProvider>
+        <aside
+          id="workspace-navigation"
+          className={`sidebar cove-sidebar${menuOpen ? ' is-open' : ''}`}
+          aria-label="工作台导航"
         >
-          <NavLink to="/app" end>
-            <Images />
-            图片库
-          </NavLink>
-          <NavLink to="/app/albums">
-            <FolderHeart />
-            相册
-          </NavLink>
-          <NavLink to="/app/account">
-            <Settings2 />
-            账号设置
-          </NavLink>
-          {user.is_admin && (
-            <>
-              <span className="cove-nav-label">管理控制台</span>
-              <NavLink to="/app/admin/users">
-                <Users />
-                用户与配额
-              </NavLink>
-              <NavLink to="/app/admin/images">
-                <ShieldCheck />
-                全部图片
-              </NavLink>
-              <NavLink to="/app/admin/settings">
-                <Settings2 />
-                系统设置
-              </NavLink>
-            </>
-          )}
-        </nav>
-        <div className="cove-storage">
-          <span>存储空间</span>
-          <strong>
-            {size(used_bytes)} <small>/ {size(user.quota_bytes)}</small>
-          </strong>
-          <progress
-            max={Math.max(user.quota_bytes, 1)}
-            value={Math.min(used_bytes, Math.max(user.quota_bytes, 1))}
-          />
-          <p>Web 上传默认公开；安卓私有图片仅本人及管理员可见。</p>
-        </div>
-      </aside>
-      <div className="wrapper cove-workbody">
-        <header className="header cove-workheader">
-          <Button
-            className="cove-collapse-button"
-            variant="ghost"
-            aria-label={collapsed ? '展开导航' : '收起导航'}
-            aria-expanded={!collapsed}
-            aria-controls="workspace-navigation"
-            onClick={() => setCollapsed(!collapsed)}
+          <Brand />
+          <span className="cove-nav-label">我的空间</span>
+          <nav
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest('a'))
+                setMenuOpen(false);
+            }}
           >
-            <Menu />
-          </Button>
-          <Button
-            className="cove-menu-button"
-            variant="ghost"
-            aria-label={menuOpen ? '关闭导航' : '打开导航'}
-            aria-expanded={menuOpen}
-            aria-controls="workspace-navigation"
-            onClick={() => setMenuOpen(!menuOpen)}
-          >
-            {menuOpen ? <X /> : <Menu />}
-          </Button>
-          <span>
-            工作台 <span className="cove-muted">/ 图湾</span>
-          </span>
-          <div>
-            <span className="cove-avatar">
-              {user.username.slice(0, 1).toUpperCase()}
-            </span>
-            <span>{user.username}</span>
-            <Button
-              variant="ghost"
-              onClick={() => void logout()}
-              title="退出登录"
-              aria-label="退出登录"
-            >
-              <LogOut />
-            </Button>
+            <NavLink to="/app" end>
+              <Images />
+              图片库
+            </NavLink>
+            <NavLink to="/app/albums">
+              <FolderHeart />
+              相册
+            </NavLink>
+            <NavLink to="/app/account">
+              <Settings2 />
+              账号设置
+            </NavLink>
+            {user.is_admin && (
+              <>
+                <span className="cove-nav-label">管理控制台</span>
+                <NavLink to="/app/admin/users">
+                  <Users />
+                  用户与配额
+                </NavLink>
+                <NavLink to="/app/admin/images">
+                  <ShieldCheck />
+                  全部图片
+                </NavLink>
+                <NavLink to="/app/admin/settings">
+                  <Settings2 />
+                  系统设置
+                </NavLink>
+              </>
+            )}
+          </nav>
+          <div className="cove-storage">
+            <span>存储空间</span>
+            <strong>
+              {size(used_bytes)} <small>/ {size(user.quota_bytes)}</small>
+            </strong>
+            <progress
+              max={Math.max(user.quota_bytes, 1)}
+              value={Math.min(used_bytes, Math.max(user.quota_bytes, 1))}
+            />
+            <p>Web 上传默认公开；安卓私有图片仅本人及管理员可见。</p>
           </div>
-        </header>
-        <main className="cove-workmain">
-          <Outlet />
-        </main>
-      </div>
+        </aside>
+        <div className="wrapper cove-workbody">
+          <header className="header cove-workheader">
+            <Button
+              className="cove-collapse-button"
+              variant="ghost"
+              aria-label={collapsed ? '展开导航' : '收起导航'}
+              aria-expanded={!collapsed}
+              aria-controls="workspace-navigation"
+              onClick={() => setCollapsed(!collapsed)}
+            >
+              <Menu />
+            </Button>
+            <Button
+              className="cove-menu-button"
+              variant="ghost"
+              aria-label={menuOpen ? '关闭导航' : '打开导航'}
+              aria-expanded={menuOpen}
+              aria-controls="workspace-navigation"
+              onClick={() => setMenuOpen(!menuOpen)}
+            >
+              {menuOpen ? <X /> : <Menu />}
+            </Button>
+            <span>
+              工作台 <span className="cove-muted">/ 图湾</span>
+            </span>
+            <div>
+              <span className="cove-avatar">
+                {user.username.slice(0, 1).toUpperCase()}
+              </span>
+              <span>{user.username}</span>
+              <Button
+                variant="ghost"
+                onClick={() => void logout()}
+                title="退出登录"
+                aria-label="退出登录"
+              >
+                <LogOut />
+              </Button>
+            </div>
+          </header>
+          <main className="cove-workmain">
+            <Outlet />
+          </main>
+        </div>
+      </UploadProvider>
     </div>
   );
 }
@@ -262,7 +273,7 @@ function Heading({
 export function Gallery({ all = false }: { all?: boolean }) {
   const [page, setPage] = useState(1);
   const [album, setAlbum] = useState('all');
-  const [format, setFormat] = useState('url');
+  const [copying, setCopying] = useState<Picture[]>([]);
   const [qr, setQr] = useState<Picture | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [editing, setEditing] = useState<Picture | null>(null);
@@ -272,13 +283,17 @@ export function Gallery({ all = false }: { all?: boolean }) {
   const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
-  const [queue, setQueue] = useState<
-    { file: File; status: string; error?: string }[]
-  >([]);
-  const uploading = useRef(false);
+  const {
+    queue,
+    busy: uploading,
+    retryAfter,
+    upload,
+    retryFailed,
+    clearQueue,
+    removeImage,
+  } = useUploads();
   const action = useAction();
   const me = useMe();
-  const client = useQueryClient();
   const albums = useQuery({
     queryKey: ['albums'],
     queryFn: () => api<Album[]>('/albums'),
@@ -292,61 +307,46 @@ export function Gallery({ all = false }: { all?: boolean }) {
   });
   const items = images.data?.items || [];
   const chosen = items.filter((item) => selected.includes(item.id));
-  async function upload(files: FileList | File[]) {
-    if (uploading.current || action.busy || !files.length) return;
-    uploading.current = true;
-    const batch = Array.from(files);
-    setQueue(batch.map((file) => ({ file, status: '等待' })));
-    let count = 0;
-    await action.run(async () => {
-      const errors: string[] = [];
-      for (const [index, file] of batch.entries()) {
-        const update = (status: string, error?: string) =>
-          setQueue((items) =>
-            items.map((item, i) =>
-              i === index ? { ...item, status, error } : item,
-            ),
-          );
-        update('上传中');
-        try {
-          if (!file.size || file.size > 10 * 1024 * 1024)
-            throw new Error('单张图片须为 1 字节至 10 MiB');
-          const body = new FormData();
-          body.append('file', file);
-          await api<Picture>(
-            `/images${album !== 'all' ? `?album_id=${album}` : ''}`,
-            'POST',
-            body,
-          );
-          count++;
-          update('完成');
-        } catch (error) {
-          update('失败', message(error));
-          errors.push(`${file.name}：${message(error)}`);
-        }
-      }
-      setPage(1);
+  const activeUpload = queue.find((item) =>
+    ['上传中', '服务器处理中'].includes(item.status),
+  );
+  const firstUploadError = queue.find((item) => item.status === '失败');
+  useEffect(() => {
+    if (
+      !images.isPending &&
+      !images.isFetching &&
+      !images.isError &&
+      page > 1 &&
+      !items.length
+    ) {
+      setPage((current) => current - 1);
       setSelected([]);
-      if (errors.length)
-        throw new Error(`已上传 ${count} 张。${errors.join('；')}`);
-    }, '图片上传完成');
-    uploading.current = false;
-    if (input.current) input.current.value = '';
-    if (folderInput.current) folderInput.current.value = '';
-    await client.invalidateQueries({ queryKey: ['images'] });
-  }
-  async function copy(pictures: Picture[]) {
-    if (pictures.some((item) => !item.is_public)) {
-      toast.error('私有图片不能复制公开链接，请先在安卓端确认公开分享');
+    }
+  }, [images.isPending, images.isFetching, images.isError, items.length, page]);
+  function handleUpload(files: FileList | File[]) {
+    if (action.busy) {
+      toast.info('正在处理，请稍等片刻再添加图片');
       return;
     }
+    upload(files, album);
+  }
+  function showLinks(pictures: Picture[]) {
+    if (pictures.some((item) => item.deleted_at)) {
+      toast.error('待清理图片的链接已失效，请取消选择后重试');
+      return;
+    }
+    if (pictures.some((item) => !item.is_public)) {
+      toast.error('所选图片中有私有图片。如需分享，请先在安卓端将它设为公开');
+      return;
+    }
+    setCopying(pictures);
+  }
+  async function copy(text: string) {
     try {
-      await navigator.clipboard.writeText(
-        pictures.map((item) => imageLink(item, format)).join('\n'),
-      );
+      await navigator.clipboard.writeText(text);
       toast.success('链接已复制');
     } catch {
-      toast.error('复制失败，请在 HTTPS 下使用，或打开图片手动复制地址');
+      toast.error('未能复制到剪贴板，你可以选中文字手动复制');
     }
   }
   const albumOptions = (
@@ -373,112 +373,209 @@ export function Gallery({ all = false }: { all?: boolean }) {
         <div
           className={`cove-drop ${dragging ? 'is-dragging' : ''}`}
           tabIndex={0}
+          aria-busy={uploading}
           aria-label="上传区域，可粘贴剪贴板图片"
           onPaste={(event) => {
             if (event.clipboardData.files.length) {
               event.preventDefault();
-              void upload(event.clipboardData.files);
+              handleUpload(event.clipboardData.files);
             }
           }}
           onDragOver={(event) => {
             event.preventDefault();
-            setDragging(true);
+            setDragging(!uploading && !action.busy);
           }}
           onDragLeave={() => setDragging(false)}
           onDrop={(event) => {
             event.preventDefault();
             setDragging(false);
-            void upload(event.dataTransfer.files);
+            handleUpload(event.dataTransfer.files);
           }}
         >
           <div className="cove-upload-icon">
             <CloudUpload />
           </div>
-          <h2>把图片放进你的港湾</h2>
-          <p>拖拽到此处，或选择图片上传</p>
-          <Button disabled={action.busy} onClick={() => input.current?.click()}>
-            {action.busy ? '处理中…' : '选择图片'}
-            <CloudUpload />
-          </Button>
-          <input
-            ref={input}
-            hidden
-            type="file"
-            multiple
-            accept="image/jpeg,image/png,image/webp,image/gif"
-            onChange={(event) => {
-              if (event.target.files) void upload(event.target.files);
-            }}
-          />
-          <Button
-            variant="outline"
-            disabled={action.busy}
-            onClick={() => folderInput.current?.click()}
-          >
-            选择文件夹
-          </Button>
-          <input
-            ref={folderInput}
-            hidden
-            type="file"
-            multiple
-            {...{ webkitdirectory: '' }}
-            onChange={(event) => {
-              if (event.target.files)
-                void upload(
-                  Array.from(event.target.files).filter((file) =>
-                    /\.(jpe?g|png|webp|gif)$/i.test(file.name),
-                  ),
-                );
-            }}
-          />
-          <small>
-            支持粘贴图片、文件夹上传；JPEG / PNG / WebP / GIF · 单张最大 10 MiB
-            · 原图保存
-          </small>
-          <small>持有链接即可访问；管理员可查看和删除图片。</small>
+          <h2>上传图片</h2>
+          <p>
+            {uploading || action.busy
+              ? '正在处理，请稍等片刻再添加图片'
+              : '把图片拖到这里，也可以直接粘贴'}
+          </p>
+          <div className="cove-upload-actions">
+            <Button
+              disabled={action.busy || uploading}
+              onClick={() => input.current?.click()}
+            >
+              {uploading || action.busy ? '处理中…' : '选择图片'}
+              <CloudUpload />
+            </Button>
+            <input
+              ref={input}
+              hidden
+              type="file"
+              multiple
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              onChange={(event) => {
+                if (event.target.files) {
+                  handleUpload(event.target.files);
+                  event.currentTarget.value = '';
+                }
+              }}
+            />
+            <Button
+              variant="outline"
+              disabled={action.busy || uploading}
+              onClick={() => folderInput.current?.click()}
+            >
+              选择文件夹
+            </Button>
+            <input
+              ref={folderInput}
+              hidden
+              type="file"
+              multiple
+              {...{ webkitdirectory: '' }}
+              onChange={(event) => {
+                if (event.target.files) {
+                  handleUpload(
+                    Array.from(event.target.files).filter((file) =>
+                      /\.(jpe?g|png|webp|gif)$/i.test(file.name),
+                    ),
+                  );
+                  event.currentTarget.value = '';
+                }
+              }}
+            />
+          </div>
+          <small>JPEG / PNG / WebP / GIF · 单张最大 10 MiB · 原图保存</small>
+          <small>上传的图片可通过链接访问，管理员也可以查看和删除。</small>
         </div>
       )}
       {!all && queue.length > 0 && (
-        <section aria-label="上传队列" aria-live="polite">
-          <p>
-            已处理{' '}
-            {
-              queue.filter((item) => ['完成', '失败'].includes(item.status))
-                .length
-            }{' '}
-            / {queue.length}
-          </p>
-          <progress
-            max={queue.length}
-            value={
-              queue.filter((item) => ['完成', '失败'].includes(item.status))
-                .length
-            }
-          />
-          <ul>
-            {queue.map((item, index) => (
-              <li key={index}>
-                {item.file.webkitRelativePath || item.file.name}：{item.status}
-                {item.error && ` — ${item.error}`}
-              </li>
-            ))}
-          </ul>
-          <Button
-            variant="outline"
-            disabled={
-              action.busy || !queue.some((item) => item.status === '失败')
-            }
-            onClick={() =>
-              void upload(
-                queue
-                  .filter((item) => item.status === '失败')
-                  .map((item) => item.file),
-              )
-            }
-          >
-            重试失败项
-          </Button>
+        <section className="cove-upload-queue" aria-label="上传队列">
+          <div className="cove-upload-summary">
+            <div role="status">
+              <h2>
+                {uploading
+                  ? '正在上传'
+                  : queue.some((item) => item.status === '等待重试')
+                    ? '上传已暂停'
+                    : '上传结果'}
+              </h2>
+              <p>
+                成功 {queue.filter((item) => item.status === '完成').length} ·
+                已存在 {queue.filter((item) => item.status === '已存在').length}{' '}
+                · 失败 {queue.filter((item) => item.status === '失败').length} ·
+                共 {queue.length} 张
+              </p>
+            </div>
+            {!uploading && (
+              <Button
+                variant="ghost"
+                onClick={clearQueue}
+                title="只清除上传记录，不会删除图库中的图片"
+              >
+                清除上传记录
+              </Button>
+            )}
+          </div>
+          {activeUpload && (
+            <div className="cove-upload-current" role="status">
+              <p>
+                {activeUpload.file.name} ·{' '}
+                {activeUpload.status === '服务器处理中'
+                  ? '图片已传完，正在保存…'
+                  : `上传中 ${activeUpload.progress}%`}
+              </p>
+              <progress
+                aria-label="当前图片传输进度"
+                max={100}
+                value={activeUpload.progress}
+              />
+            </div>
+          )}
+          {firstUploadError && (
+            <p className="cove-error cove-upload-error" role="alert">
+              {firstUploadError.file.name}：{firstUploadError.error}
+              <span className="block">
+                展开上传明细，可以查看每张图片的结果。
+              </span>
+            </p>
+          )}
+          <details className="cove-upload-details">
+            <summary>查看上传明细（{queue.length} 项）</summary>
+            <ul>
+              {queue.map((item) => (
+                <li key={item.id}>
+                  <div className="cove-upload-file">
+                    <span
+                      title={item.file.webkitRelativePath || item.file.name}
+                    >
+                      {item.file.webkitRelativePath || item.file.name}
+                    </span>
+                    <span
+                      className={
+                        item.status === '失败' ? 'cove-error' : 'cove-muted'
+                      }
+                    >
+                      {item.status === '上传中'
+                        ? `上传中 ${item.progress}%`
+                        : item.status === '等待重试'
+                          ? '等待重试'
+                          : item.status}
+                    </span>
+                  </div>
+                  {['上传中', '服务器处理中'].includes(item.status) && (
+                    <progress
+                      aria-label={`${item.file.name} 传输进度`}
+                      max={100}
+                      value={item.progress}
+                    />
+                  )}
+                  {item.status === '服务器处理中' && (
+                    <p className="cove-muted">图片已传完，正在保存…</p>
+                  )}
+                  {item.status === '已存在' && (
+                    <p className="cove-muted">
+                      图库里已有这张图片，没有重复保存。原来的名称、相册和公开状态都不变。
+                    </p>
+                  )}
+                  {item.image && (
+                    <div className="cove-upload-result">
+                      <a href={item.image.url} target="_blank" rel="noreferrer">
+                        查看原图：{item.image.original_name}
+                      </a>
+                      <Button
+                        variant="outline"
+                        disabled={
+                          !item.image.is_public || !!item.image.deleted_at
+                        }
+                        onClick={() => showLinks([item.image!])}
+                      >
+                        <Copy />
+                        复制链接
+                      </Button>
+                      {!item.image.is_public && (
+                        <span className="cove-muted">
+                          这张图片仅你和管理员可见。如需分享，请先在安卓端将它设为公开。
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {item.error && <p className="cove-error">{item.error}</p>}
+                </li>
+              ))}
+            </ul>
+          </details>
+          {queue.some((item) => ['失败', '等待重试'].includes(item.status)) && (
+            <Button
+              variant="outline"
+              disabled={uploading || retryAfter > Date.now()}
+              onClick={retryFailed}
+            >
+              {retryAfter > Date.now() ? '请稍候再重试' : '重试未完成项'}
+            </Button>
+          )}
         </section>
       )}
       <div className="cove-toolbar">
@@ -509,21 +606,6 @@ export function Gallery({ all = false }: { all?: boolean }) {
             </Select>
           )}
         </div>
-        <Select value={format} onValueChange={setFormat}>
-          <SelectTrigger aria-label="复制格式">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="url">直链</SelectItem>
-            <SelectItem value="markdown">Markdown</SelectItem>
-            <SelectItem value="html">HTML</SelectItem>
-            <SelectItem value="bbcode">BBCode</SelectItem>
-            <SelectItem value="markdown-thumbnail">
-              Markdown 缩略图链接
-            </SelectItem>
-            <SelectItem value="html-thumbnail">HTML 缩略图链接</SelectItem>
-          </SelectContent>
-        </Select>
       </div>
       {albums.isError && !all && (
         <p role="alert" className="cove-error">
@@ -547,7 +629,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
         <Button
           variant="outline"
           disabled={!chosen.length}
-          onClick={() => void copy(chosen)}
+          onClick={() => showLinks(chosen)}
         >
           <Copy />
           复制链接
@@ -573,12 +655,21 @@ export function Gallery({ all = false }: { all?: boolean }) {
               disabled={!chosen.length || action.busy}
               onClick={() =>
                 void action.run(async () => {
-                  for (const item of chosen)
-                    await api(`/images/${item.id}`, 'PATCH', {
-                      original_name: item.original_name,
-                      album_id: moveTo === 'none' ? null : moveTo,
-                    });
-                  setSelected([]);
+                  let moved = 0;
+                  try {
+                    for (const item of chosen) {
+                      await api(`/images/${item.id}`, 'PATCH', {
+                        original_name: item.original_name,
+                        album_id: moveTo === 'none' ? null : moveTo,
+                      });
+                      moved++;
+                      setSelected((ids) => ids.filter((id) => id !== item.id));
+                    }
+                  } catch (error) {
+                    throw new Error(
+                      `已移动 ${moved} 张，剩余 ${chosen.length - moved} 张未完成，请重试。${message(error)}`,
+                    );
+                  }
                 }, '已移动图片')
               }
             >
@@ -597,11 +688,21 @@ export function Gallery({ all = false }: { all?: boolean }) {
       ) : !items.length ? (
         <div className="cove-empty">
           <Images />
-          <h2>这里还没有图片</h2>
+          <h2>
+            {page > 1
+              ? '本页没有图片'
+              : album !== 'all'
+                ? '相册里还没有图片'
+                : '这里还没有图片'}
+          </h2>
           <p>
-            {all
-              ? '用户上传后，图片会出现在这里。'
-              : '上传第一张图片，开始收藏你的灵感。'}
+            {page > 1
+              ? '正在返回上一页…'
+              : all
+                ? '用户上传后，图片会出现在这里。'
+                : album !== 'all'
+                  ? '可以从其他相册移动图片过来。'
+                  : '上传第一张图片，开始收藏你的灵感。'}
           </p>
         </div>
       ) : (
@@ -648,7 +749,8 @@ export function Gallery({ all = false }: { all?: boolean }) {
                 <div className="cove-image-actions">
                   <Button
                     variant="ghost"
-                    onClick={() => void copy([item])}
+                    disabled={!!item.deleted_at}
+                    onClick={() => showLinks([item])}
                     aria-label={`复制 ${item.original_name} 链接`}
                   >
                     <Copy />
@@ -697,6 +799,60 @@ export function Gallery({ all = false }: { all?: boolean }) {
           setSelected([]);
         }}
       />
+      <Dialog
+        open={copying.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setCopying([]);
+        }}
+      >
+        <DialogContent className="cove-copy-dialog">
+          <DialogHeader>
+            <DialogTitle>复制图片链接</DialogTitle>
+            <DialogDescription>
+              {copying.length === 1
+                ? copying[0].original_name
+                : `已选 ${copying.length} 张图片，每张图片占一行。`}{' '}
+              找到需要的格式，点击右侧“复制”即可。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="cove-copy-formats">
+            {[
+              ['url', '直链'],
+              ['markdown', 'Markdown'],
+              ['html', 'HTML'],
+              ['bbcode', 'BBCode'],
+              ['markdown-thumbnail', 'Markdown 缩略图链接'],
+              ['html-thumbnail', 'HTML 缩略图链接'],
+            ].map(([format, label]) => {
+              const text = copying
+                .map((item) => imageLink(item, format))
+                .join('\n');
+              return (
+                <div className="cove-copy-format" key={format}>
+                  <div>
+                    <label htmlFor={`copy-${format}`}>{label}</label>
+                    <Button
+                      variant="outline"
+                      aria-label={`复制 ${label}`}
+                      onClick={() => void copy(text)}
+                    >
+                      <Copy />
+                      复制
+                    </Button>
+                  </div>
+                  <Textarea
+                    id={`copy-${format}`}
+                    readOnly
+                    rows={2}
+                    value={text}
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
       <ShareQr image={qr} onClose={() => setQr(null)} />
       <Dialog
         open={!!editing}
@@ -761,7 +917,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
           <DialogHeader>
             <DialogTitle>删除 {deleting.length} 张图片？</DialogTitle>
             <DialogDescription>
-              文件将被永久删除，原外链失效，无法恢复。成功清理文件后释放容量。
+              删除后无法恢复，之前复制或分享的链接也会失效。重复上传得到的同一图片链接同样会失效；文件清理完成后，所占空间会释放。
             </DialogDescription>
           </DialogHeader>
           <Button
@@ -770,7 +926,12 @@ export function Gallery({ all = false }: { all?: boolean }) {
             onClick={() =>
               void action.run(async () => {
                 for (const item of deleting) {
-                  await api(`/images/${item.id}`, 'DELETE');
+                  try {
+                    await api(`/images/${item.id}`, 'DELETE');
+                  } finally {
+                    // A failed file cleanup can already have invalidated the public link.
+                    removeImage(item.id);
+                  }
                   setDeleting((current) =>
                     current.filter((row) => row.id !== item.id),
                   );
@@ -886,11 +1047,12 @@ export function AccountSettings() {
     <>
       <Heading
         title="账号设置"
-        description="修改密码后，所有设备需重新登录。"
+        description="管理登录用户名、密码与验证方式。"
       />
-      <AccountSecurity />
-      <Card className="cove-narrow">
-        <CardContent>
+      <Card className="cove-account">
+        <AccountSecurity />
+        <section className="cove-account-section">
+          <h2>修改密码</h2>
           <form
             className="cove-form"
             onSubmit={(event) => {
@@ -921,13 +1083,16 @@ export function AccountSettings() {
                 name="password"
                 type="password"
                 autoComplete="new-password"
-                minLength={12}
+                aria-describedby="new-password-hint"
                 maxLength={128}
                 required
               />
             </label>
+            <p id="new-password-hint" className="cove-muted">
+              建议使用至少 12 位的字母、数字和符号组合。
+            </p>
             <label>
-              动态验证码（已开启二步验证时必填）
+              动态验证码（开启二步验证后填写）
               <Input
                 name="code"
                 inputMode="numeric"
@@ -939,8 +1104,9 @@ export function AccountSettings() {
             <Button disabled={action.busy} type="submit">
               更新密码
             </Button>
+            <p className="cove-muted">修改密码后，所有设备需重新登录。</p>
           </form>
-        </CardContent>
+        </section>
       </Card>
     </>
   );
@@ -1150,7 +1316,7 @@ export function UserManagement() {
                 name="password"
                 type="password"
                 required={create}
-                minLength={12}
+                aria-describedby="new-password-hint"
                 maxLength={128}
                 autoComplete="new-password"
               />

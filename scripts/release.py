@@ -105,6 +105,7 @@ def build(output, work_parent, tag=None):
         run(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=web, env=env)
         run(['npm', 'run', 'build'], cwd=web, env=env)
         run([web / 'node_modules/.bin/tsx', source / 'tests/web.test.mts'], cwd=source, env=env)
+        run([web / 'node_modules/.bin/tsx', source / 'tests/upload.test.mjs'], cwd=source, env=env)
         name = f'piccove-v{value}-linux-x86_64'
         stage = work / name
         (stage / 'bin').mkdir(parents=True)
