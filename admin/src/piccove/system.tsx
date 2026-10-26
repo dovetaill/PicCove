@@ -14,7 +14,7 @@ type System = {
 };
 type Release = { latest: string; update_available: boolean; url: string };
 
-export function SystemSettings() {
+export function SystemSettings({ section }: { section: string }) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [release, setRelease] = useState<Release | null>(null);
@@ -50,8 +50,8 @@ export function SystemSettings() {
   const running = system.data?.manager?.state === 'running';
   return (
     <>
-      <StorageSettings />
-      <Card id="settings-system" className="cove-settings-card">
+      <StorageSettings section={section} />
+      <Card id="settings-system" className="cove-settings-card" hidden={section !== 'system'}>
         <CardContent>
           <div className="cove-settings-title">
             <h2>版本与服务</h2>

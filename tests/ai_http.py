@@ -3,6 +3,8 @@ Run as non-root with PICCOVE_AI_TEST_WORK/BINARY/DB pointing to task-owned resou
 No real AI credentials, production database, or external provider is used.
 """
 import base64
+from email.parser import BytesParser
+from email.policy import default
 import http.cookiejar
 import http.server
 import json
@@ -52,10 +54,31 @@ def main():
     class Provider(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        def do_GET(self):
+            assert self.path == '/v1/models'
             assert self.headers['Authorization'] == 'Bearer test-secret'
-            if self.path == '/v1/chat/completions':
+            data = json.dumps({'data': [{'id': 'image-test'}, {'id': 'chat-test'}, {'id': 'image-test'}]}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def do_POST(self):
+            raw = self.rfile.read(int(self.headers['Content-Length']))
+            if self.path == '/v1/images/edits':
+                message = BytesParser(policy=default).parsebytes(b'Content-Type: ' + self.headers['Content-Type'].encode() + b'\r\n\r\n' + raw)
+                body = {part.get_param('name', header='content-disposition'): part.get_payload(decode=True) for part in message.iter_parts()}
+                assert body['image'].startswith(b'\x89PNG') and body['prompt'] == b'edit direct'
+                assert body['model'] == b'image-test'
+            else:
+                body = json.loads(raw)
+            assert self.headers['Authorization'] == 'Bearer test-secret'
+            if self.path in ('/v1/images/generations', '/v1/images/edits'):
+                state['last'] = self.path
+                if self.path.endswith('/generations'):
+                    assert body == {'model': 'image-test', 'prompt': 'direct', 'n': 1}
+                result = {'data': [{'b64_json': base64.b64encode(png(91 if self.path.endswith('/generations') else 92)).decode()}]}
+            elif self.path == '/v1/chat/completions':
                 state['review_calls'] += 1
                 decision = state['decision']
                 result = {'decision': decision, 'categories': ['political_cn'] if decision == 'blocked' else [], 'reason': '模拟审核'}
@@ -218,6 +241,24 @@ def main():
             return
         read = request(admin, '/api/v1/admin/ai')
         assert read['generation']['key'] == read['moderation']['key'] == '' and read['generation_key_set']
+        assert read['generation_mode'] == 'responses', 'Keep existing configurations on Responses'
+        model_input = {'provider': 'generation', 'base_url': config['generation']['base_url'], 'key': ''}
+        request(user, '/api/v1/admin/ai/models', 'POST', model_input, 403)
+        assert request(admin, '/api/v1/admin/ai/models', 'POST', model_input) == ['chat-test', 'image-test']
+        request(admin, '/api/v1/admin/ai/models', 'POST', {**model_input, 'base_url': f'http://127.0.0.1:{mock_port}/other'}, 400)
+        assert request(admin, '/api/v1/admin/ai/models', 'POST', {**model_input, 'key': 'test-secret'}) == ['chat-test', 'image-test']
+        direct = {**config, 'generation_mode': 'images', 'generation': {**config['generation'], 'model': '', 'key': ''}, 'image_model': 'image-test'}
+        save(direct)
+        assert request(user, '/api/v1/ai/status')['enabled']
+        request(admin, '/api/v1/admin/ai', 'PATCH', {**direct, 'generation_mode': 'responses'}, 400)
+        direct_cid = conversation(admin)
+        for prompt, endpoint in [('direct', '/v1/images/generations'), ('edit direct', '/v1/images/edits')]:
+            request(admin, f'/api/v1/ai/conversations/{direct_cid}', 'POST', {'prompt': prompt}, 202)
+            rows = poll(lambda: request(admin, f'/api/v1/ai/conversations/{direct_cid}'), lambda rows: rows and rows[-1]['status'] in ('completed', 'failed'))
+            assert rows[-1]['status'] == 'completed', rows[-1]
+            assert state['last'] == endpoint
+            assert request(admin, f'/i/{rows[-1]["image_id"]}', raw=True).startswith(b'\x89PNG')
+        save(config)
         assert 'test-secret' not in json.dumps(request(anonymous, '/api/v1/settings'))
         large = png(1, large=True)
         image = upload(user, large)

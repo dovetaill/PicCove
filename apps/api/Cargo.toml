@@ -1,6 +1,6 @@
 [package]
 name = "piccove-api"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 default-run = "piccove-api"
 
@@ -25,7 +25,7 @@ webauthn-rs = { version = "=0.5.5", default-features = false }
 totp-rs = { version = "=5.7.2", features = ["gen_secret", "otpauth"] }
 # Keep the existing static musl release build independent of host OpenSSL.
 openssl = { version = "0.10", features = ["vendored"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 flate2 = "1"
 tar = "0.4"
 tempfile = "3"

@@ -29,6 +29,7 @@ import {
   NavLink,
   Outlet,
   useNavigate,
+  useLocation,
   useSearchParams,
 } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -1074,49 +1075,14 @@ export function Albums() {
   const action = useAction();
   const [deleting, setDeleting] = useState<Album | null>(null);
   const [editing, setEditing] = useState<Album | null>(null);
+  const [creating, setCreating] = useState(false);
   return (
     <>
       <Heading
         title="我的相册"
         description="按文章、项目或灵感分类，让图片更好找。"
       />
-      <Card>
-        <CardContent>
-          <form
-            className="cove-inline-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const form = event.currentTarget;
-              const values = new FormData(form);
-              void action.run(async () => {
-                await api('/albums', 'POST', {
-                  name: values.get('name'),
-                  description: values.get('description'),
-                });
-                form.reset();
-              }, '相册已创建');
-            }}
-          >
-            <Input
-              name="name"
-              aria-label="新相册名称"
-              required
-              maxLength={100}
-              placeholder="给新相册起个名字"
-            />
-            <Textarea
-              name="description"
-              aria-label="相册描述（可选）"
-              maxLength={500}
-              rows={2}
-              placeholder="这个相册用来放什么（可选）"
-            />
-            <Button type="submit" disabled={action.busy}>
-              创建相册
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+      <div className="cove-albums-toolbar"><Button onClick={() => setCreating(true)}>创建相册</Button><span className="cove-muted">{albums.data ? `${albums.data.length} 个相册` : ''}</span></div>
       {albums.isPending && <p role="status">正在加载…</p>}
       {albums.isError && (
         <p role="alert" className="cove-error">
@@ -1127,8 +1093,8 @@ export function Albums() {
         {albums.data?.map((album) => (
           <Card key={album.id}>
             <CardContent>
-              <FolderHeart />
-              <Link to={`/app?album=${album.id}`}>{album.name}</Link>
+              <div className="cove-album-icon"><FolderHeart aria-hidden="true" /></div>
+              <h2><Link to={`/app?album=${album.id}`}>{album.name}</Link></h2>
               {album.description && <p>{album.description}</p>}
               <div className="cove-album-actions">
                 <Button
@@ -1188,15 +1154,15 @@ export function Albums() {
         </DialogContent>
       </Dialog>
       <Dialog
-        open={!!editing}
+        open={creating || !!editing}
         onOpenChange={(open) => {
-          if (!open) setEditing(null);
+          if (!open) { setEditing(null); setCreating(false); }
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>编辑相册</DialogTitle>
-            <DialogDescription>修改名称和描述，外链不受影响。</DialogDescription>
+            <DialogTitle>{creating ? '创建相册' : '编辑相册'}</DialogTitle>
+            <DialogDescription>{creating ? '填写名称，可选填描述，之后可从图库添加图片。' : '修改名称和描述，外链不受影响。'}</DialogDescription>
           </DialogHeader>
           <form
             className="cove-form"
@@ -1205,12 +1171,13 @@ export function Albums() {
               const form = event.currentTarget;
               const values = new FormData(form);
               void action.run(async () => {
-                await api(`/albums/${editing?.id}`, 'PATCH', {
+                await api(creating ? '/albums' : `/albums/${editing?.id}`, creating ? 'POST' : 'PATCH', {
                   name: values.get('name'),
                   description: values.get('description'),
                 });
                 setEditing(null);
-              }, '相册已更新');
+                setCreating(false);
+              }, creating ? '相册已创建' : '相册已更新');
             }}
           >
             <label>
@@ -1232,7 +1199,7 @@ export function Albums() {
               />
             </label>
             <Button type="submit" disabled={action.busy}>
-              保存
+              {creating ? '创建相册' : '保存'}
             </Button>
           </form>
         </DialogContent>
@@ -1340,6 +1307,9 @@ export function AccountSettings() {
   );
 }
 export function RegistrationSettings() {
+  const { hash } = useLocation();
+  const sections = [['ai', 'AI 生图与审核'], ['registration', '用户注册'], ['storage', '存储位置'], ['migration', '图片迁移'], ['import', '批量导入'], ['jobs', '任务记录'], ['system', '版本与服务']];
+  const active = sections.some(([id]) => hash === `#settings-${id}`) ? hash.slice(10) : 'ai';
   const settings = useSettings();
   const action = useAction();
   return (
@@ -1350,17 +1320,11 @@ export function RegistrationSettings() {
       />
       <div className="cove-settings-layout">
         <nav className="cove-settings-nav" aria-label="设置分类">
-          <a href="#settings-ai">AI 生图与审核</a>
-          <a href="#settings-registration">用户注册</a>
-          <a href="#settings-storage">存储位置</a>
-          <a href="#settings-migration">图片迁移</a>
-          <a href="#settings-import">批量导入</a>
-          <a href="#settings-jobs">任务记录</a>
-          <a href="#settings-system">版本与服务</a>
+          {sections.map(([id, label]) => <Link key={id} to={`#settings-${id}`} aria-current={active === id ? 'page' : undefined}>{label}</Link>)}
         </nav>
         <div className="cove-settings-content">
-          <AiSettings />
-          <Card id="settings-registration" className="cove-settings-card">
+          <div hidden={active !== 'ai'}><AiSettings /></div>
+          <Card id="settings-registration" className="cove-settings-card" hidden={active !== 'registration'}>
             <CardContent>
               <div className="cove-setting">
                 <div>
@@ -1390,7 +1354,7 @@ export function RegistrationSettings() {
               )}
             </CardContent>
           </Card>
-          <SystemSettings />
+          <SystemSettings section={active} />
         </div>
       </div>
     </>

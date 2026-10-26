@@ -1008,6 +1008,159 @@ td small {
   gap: 24px;
   min-width: 0;
 }
+.cove-settings-content [hidden] {
+  display: none;
+}
+.cove-settings-nav a[aria-current='page'] {
+  background: var(--muted);
+  color: var(--foreground);
+  font-weight: 600;
+}
+.cove-ai-config {
+  margin-top: 0;
+}
+.cove-ai-provider {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+.cove-ai-provider legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+.cove-ai-number {
+  max-width: 300px;
+}
+.cove-ai-page,
+.cove-review-page {
+  display: grid;
+  gap: 20px;
+}
+.cove-ai-page .cove-heading,
+.cove-review-page .cove-heading {
+  margin-bottom: 0;
+}
+.cove-chat-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--card);
+  height: max(600px, calc(100dvh - 270px));
+}
+.cove-chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+}
+.cove-chat-history > button {
+  flex-shrink: 0;
+}
+.cove-chat-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.cove-chat-messages {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.cove-chat-messages > * {
+  flex-shrink: 0;
+}
+.cove-chat-composer {
+  border-top: 1px solid var(--border);
+  padding: 18px 24px;
+  margin: 0;
+  gap: 12px;
+}
+.cove-chat-composer .cove-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0;
+}
+.cove-review-row {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 24px;
+  padding: 20px;
+}
+.cove-review-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100px;
+  background: var(--muted);
+  border-radius: 8px;
+}
+.cove-review-preview img {
+  max-height: 160px;
+  object-fit: contain;
+}
+.cove-review-detail {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  overflow-wrap: anywhere;
+}
+.cove-albums-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.cove-albums [data-slot='card-content'] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.cove-album-icon {
+  background: var(--muted);
+  padding: 20px;
+  border-radius: 8px;
+}
+.cove-album-actions {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 767px) {
+  .cove-chat-layout {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+  .cove-chat-history {
+    max-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .cove-chat-messages {
+    min-height: 200px;
+    max-height: 55dvh;
+    padding: 16px;
+  }
+  .cove-chat-composer {
+    padding: 16px;
+  }
+  .cove-review-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .cove-ai-provider {
+    padding: 14px;
+  }
+}
 .cove-settings-card {
   min-width: 0;
   scroll-margin-top: calc(var(--header-height) + 24px);

@@ -42,7 +42,7 @@ const states: Record<string, string> = {
   import: '导入',
 };
 
-export function StorageSettings() {
+export function StorageSettings({ section }: { section: string }) {
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [source, setSource] = useState('');
@@ -125,7 +125,7 @@ export function StorageSettings() {
   ));
   return (
     <>
-      <Card id="settings-storage" className="cove-settings-card">
+      <Card id="settings-storage" className="cove-settings-card" hidden={section !== 'storage'}>
         <CardContent>
           <div className="cove-settings-title">
             <h2>存储位置</h2>
@@ -225,7 +225,7 @@ export function StorageSettings() {
           </form>
         </CardContent>
       </Card>
-      <Card id="settings-migration" className="cove-settings-card">
+      <Card id="settings-migration" className="cove-settings-card" hidden={section !== 'migration'}>
         <CardContent>
           <div className="cove-settings-title">
             <h2>图片迁移</h2>
@@ -280,7 +280,7 @@ export function StorageSettings() {
           </div>
         </CardContent>
       </Card>
-      <Card id="settings-import" className="cove-settings-card">
+      <Card id="settings-import" className="cove-settings-card" hidden={section !== 'import'}>
         <CardContent>
           <div className="cove-settings-title">
             <h2>批量导入</h2>
@@ -446,7 +446,7 @@ export function StorageSettings() {
           )}
         </CardContent>
       </Card>
-      <Card id="settings-jobs" className="cove-settings-card">
+      <Card id="settings-jobs" className="cove-settings-card" hidden={section !== 'jobs'}>
         <CardContent>
           <div className="cove-settings-title">
             <h2>任务记录</h2>

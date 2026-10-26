@@ -1,9 +1,17 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { api, useMe, type Page, type Picture, type User } from './api';
 
@@ -42,6 +50,7 @@ function useSave() {
 type Provider = { base_url: string; key: string; model: string };
 type Config = {
   generation: Provider;
+  generation_mode: 'images' | 'responses';
   moderation: Provider;
   image_model: string;
   moderation_enabled: boolean;
@@ -54,8 +63,44 @@ type Config = {
 };
 function ConfigForm({ config }: { config: Config }) {
   const action = useSave();
+  const [mode, setMode] = useState(config.generation_mode);
+  const [review, setReview] = useState(config.moderation_enabled);
+  const [models, setModels] = useState<Record<string, string[]>>({});
+  const [loading, setLoading] = useState<string | null>(null);
+  const [modelErrors, setModelErrors] = useState<Record<string, string>>({});
+  const [error, setError] = useState('');
+  async function fetchModels(
+    name: 'generation' | 'moderation',
+    form: HTMLFormElement,
+  ) {
+    const values = new FormData(form);
+    setLoading(name);
+    setModelErrors((old) => ({ ...old, [name]: '' }));
+    try {
+      const items = await api<string[]>('/admin/ai/models', 'POST', {
+        provider: name,
+        base_url: String(values.get(`${name}_url`) || '').trim(),
+        key: String(values.get(`${name}_key`) || ''),
+      });
+      setModels((old) => ({ ...old, [name]: items }));
+      if (!items.length)
+        setModelErrors((old) => ({
+          ...old,
+          [name]: '未找到模型，请手动填写模型 ID。',
+        }));
+    } catch (e) {
+      setModels((old) => ({ ...old, [name]: [] }));
+      setModelErrors((old) => ({
+        ...old,
+        [name]: `${errorText(e)}。可以手动填写模型 ID。`,
+      }));
+    } finally {
+      setLoading(null);
+    }
+  }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setError('');
     const element = event.currentTarget;
     const form = new FormData(element);
     const provider = (name: string): Provider => ({
@@ -63,125 +108,254 @@ function ConfigForm({ config }: { config: Config }) {
       key: String(form.get(`${name}_key`) || ''),
       model: String(form.get(`${name}_model`) || '').trim(),
     });
-    void action.save(async () => {
-      await api('/admin/ai', 'PATCH', {
-        generation: provider('generation'),
-        moderation: provider('moderation'),
-        image_model: form.get('image_model'),
-        moderation_enabled: form.has('moderation_enabled'),
-        before_publish: form.has('before_publish'),
-        daily_limit: Number(form.get('daily_limit')),
-        concurrent_limit: Number(form.get('concurrent_limit')),
-        ban_threshold: Number(form.get('ban_threshold')),
-      });
-      for (const name of ['generation_key', 'moderation_key']) {
-        const field = element.elements.namedItem(name);
-        if (field instanceof HTMLInputElement) field.value = '';
+    const generation = provider('generation');
+    const moderation = provider('moderation');
+    for (const [name, value, enabled] of [
+      ['generation', generation, !!generation.base_url],
+      ['moderation', moderation, review],
+    ] as const) {
+      for (const field of ['url', 'key', 'model'] as const) {
+        const input = element.elements.namedItem(`${name}_${field}`);
+        if (!(input instanceof HTMLInputElement)) continue;
+        const missing =
+          enabled &&
+          (field === 'url'
+            ? !value.base_url
+            : field === 'key'
+              ? !value.key && !config[`${name}_key_set`]
+              : (name === 'moderation' || mode === 'responses') &&
+                !value.model);
+        input.setCustomValidity(missing ? '请填写此项' : '');
+        if (missing) {
+          input.reportValidity();
+          return;
+        }
       }
-      toast.success('AI 设置已保存');
+    }
+    const image = element.elements.namedItem('image_model') as HTMLInputElement;
+    image.setCustomValidity(
+      generation.base_url && !image.value.trim() ? '请选择或填写图片模型' : '',
+    );
+    if (!element.reportValidity()) return;
+    void action.save(async () => {
+      try {
+        await api('/admin/ai', 'PATCH', {
+          generation,
+          moderation,
+          generation_mode: mode,
+          image_model: image.value.trim(),
+          moderation_enabled: review,
+          before_publish: form.has('before_publish'),
+          daily_limit: Number(form.get('daily_limit')),
+          concurrent_limit: Number(form.get('concurrent_limit')),
+          ban_threshold: Number(form.get('ban_threshold')),
+        });
+        for (const name of ['generation_key', 'moderation_key']) {
+          const field = element.elements.namedItem(name);
+          if (field instanceof HTMLInputElement) field.value = '';
+        }
+        toast.success('AI 设置已保存');
+      } catch (e) {
+        setError(errorText(e));
+        throw e;
+      }
     });
   }
   return (
-    <form className="cove-form" onSubmit={submit}>
+    <form
+      className="cove-form cove-ai-config"
+      noValidate
+      onSubmit={submit}
+      onInput={(e) => {
+        if (e.target instanceof HTMLInputElement)
+          e.target.setCustomValidity('');
+      }}
+    >
       {(['generation', 'moderation'] as const).map((name) => (
-        <fieldset key={name} className="space-y-3 border rounded-lg p-4">
-          <legend>
-            {name === 'generation'
-              ? '生图 API · Responses'
-              : '审核 API · 视觉 Chat Completions'}
-          </legend>
-          <label>
-            API 基础地址
-            <Input
-              name={`${name}_url`}
-              type="url"
-              defaultValue={config[name].base_url}
-              placeholder="https://example.com/v1"
-            />
-          </label>
-          <label>
-            API 密钥{config[`${name}_key_set`] ? '（已配置，留空保留）' : ''}
-            <Input
-              name={`${name}_key`}
-              type="password"
-              autoComplete="new-password"
-              maxLength={4096}
-            />
-          </label>
-          <label>
-            {name === 'generation' ? '对话模型' : '视觉审核模型'}
-            <Input
-              name={`${name}_model`}
-              defaultValue={config[name].model}
-              maxLength={200}
-            />
-          </label>
+        <fieldset key={name} className="cove-ai-provider">
+          <legend>{name === 'generation' ? '图片生成' : '图片审核'}</legend>
+          {name === 'generation' ? (
+            <label>
+              生图方式
+              <Select
+                value={mode}
+                onValueChange={(value) =>
+                  setMode(value as Config['generation_mode'])
+                }
+              >
+                <SelectTrigger aria-label="生图方式">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="images">
+                    独立生图（仅需图片模型）
+                  </SelectItem>
+                  <SelectItem value="responses">
+                    对话调用生图工具（兼容原配置）
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+          ) : (
+            <label className="cove-check">
+              <input
+                type="checkbox"
+                name="moderation_enabled"
+                checked={review}
+                onChange={(e) => setReview(e.target.checked)}
+              />
+              开启新增图片审核
+            </label>
+          )}
+          <div className="cove-settings-fields">
+            <label>
+              API 基础地址
+              <Input
+                name={`${name}_url`}
+                type="url"
+                defaultValue={config[name].base_url}
+                placeholder="https://example.com/v1"
+                onChange={() => setModels((old) => ({ ...old, [name]: [] }))}
+              />
+            </label>
+            <label>
+              API 密钥{config[`${name}_key_set`] ? '（已配置，留空保留）' : ''}
+              <Input
+                name={`${name}_key`}
+                type="password"
+                autoComplete="new-password"
+                maxLength={4096}
+                onChange={() => setModels((old) => ({ ...old, [name]: [] }))}
+              />
+            </label>
+          </div>
+          <div className="cove-actions">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!!loading || action.busy}
+              onClick={(event) => {
+                if (event.currentTarget.form)
+                  void fetchModels(name, event.currentTarget.form);
+              }}
+            >
+              {loading === name ? '正在拉取…' : '拉取 / 刷新模型'}
+            </Button>
+            <span className="cove-muted">
+              {models[name]?.length
+                ? `已获取 ${models[name].length} 个模型，输入可搜索或手动填写`
+                : '填写连接信息后拉取，也可手动填写模型 ID'}
+            </span>
+          </div>
+          {modelErrors[name] && (
+            <p role="alert" className="cove-error">
+              {modelErrors[name]}
+            </p>
+          )}
+          <datalist id={`${name}-models`}>
+            {models[name]?.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          <div className="cove-settings-fields">
+            {name === 'generation' && (
+              <label>
+                图片模型
+                <Input
+                  name="image_model"
+                  list={`${name}-models`}
+                  defaultValue={config.image_model}
+                  maxLength={200}
+                  placeholder="搜索或填写图片模型 ID"
+                />
+              </label>
+            )}
+            {(name === 'moderation' || mode === 'responses') && (
+              <label>
+                {name === 'generation' ? '对话模型' : '视觉审核模型'}
+                <Input
+                  name={`${name}_model`}
+                  list={`${name}-models`}
+                  defaultValue={config[name].model}
+                  maxLength={200}
+                  placeholder="搜索或填写模型 ID"
+                />
+              </label>
+            )}
+          </div>
+          {name === 'generation' ? (
+            <p className="cove-muted">
+              {mode === 'images'
+                ? '仅需图片模型；连续修改使用图片编辑接口。上游需支持 Base64 图片输出。'
+                : '对话模型通过 Responses 调用图片工具，需要同时配置两种模型。'}{' '}
+              模型列表不代表能力检测，请选择支持对应功能的模型。
+            </p>
+          ) : (
+            <>
+              <label className="cove-check">
+                <input
+                  type="checkbox"
+                  name="before_publish"
+                  defaultChecked={config.before_publish}
+                />
+                先审后发（不勾选为先发后审）
+              </label>
+              <label className="cove-ai-number">
+                累计违规自动封禁阈值
+                <Input
+                  type="number"
+                  name="ban_threshold"
+                  required
+                  min={1}
+                  max={10000}
+                  defaultValue={config.ban_threshold}
+                />
+              </label>
+              <p className="cove-muted">
+                色情、暴力、血腥、中国政治人物敏感均计次，AI
+                生成结果也计次。疑似结果限制访问但不计次。管理员默认免审。
+              </p>
+            </>
+          )}
         </fieldset>
       ))}
-      <label>
-        图片工具模型
-        <Input
-          name="image_model"
-          defaultValue={config.image_model}
-          maxLength={200}
-        />
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          name="moderation_enabled"
-          defaultChecked={config.moderation_enabled}
-        />{' '}
-        开启新增图片审核
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          name="before_publish"
-          defaultChecked={config.before_publish}
-        />{' '}
-        先审后发（不勾选为先发后审）
-      </label>
-      <label>
-        普通用户每日图片额度（UTC）
-        <Input
-          type="number"
-          name="daily_limit"
-          required
-          min={1}
-          max={10000}
-          defaultValue={config.daily_limit}
-        />
-      </label>
-      <label>
-        每用户同时生成任务数
-        <Input
-          type="number"
-          name="concurrent_limit"
-          required
-          min={1}
-          max={4}
-          defaultValue={config.concurrent_limit}
-        />
-      </label>
-      <label>
-        累计违规自动封禁阈值
-        <Input
-          type="number"
-          name="ban_threshold"
-          required
-          min={1}
-          max={10000}
-          defaultValue={config.ban_threshold}
-        />
-      </label>
-      <p>
-        色情、暴力、血腥、中国政治人物敏感均计次，AI
-        生成结果也计次。疑似结果限制访问但不计次。管理员默认免审。
-      </p>
-      <Button type="submit" disabled={action.busy}>
-        保存 AI 设置
-      </Button>
+      <fieldset className="cove-ai-provider">
+        <legend>生图额度</legend>
+        <div className="cove-settings-fields">
+          <label>
+            普通用户每日图片额度（UTC）
+            <Input
+              type="number"
+              name="daily_limit"
+              required
+              min={1}
+              max={10000}
+              defaultValue={config.daily_limit}
+            />
+          </label>
+          <label>
+            每用户同时生成任务数
+            <Input
+              type="number"
+              name="concurrent_limit"
+              required
+              min={1}
+              max={4}
+              defaultValue={config.concurrent_limit}
+            />
+          </label>
+        </div>
+      </fieldset>
+      {error && (
+        <p role="alert" className="cove-error">
+          {error}
+        </p>
+      )}
+      <div className="cove-actions">
+        <Button type="submit" disabled={action.busy}>
+          保存 AI 设置
+        </Button>
+      </div>
     </form>
   );
 }
@@ -238,9 +412,7 @@ export function UserModerationControls({ user }: { user: User }) {
           type="button"
           variant="outline"
           disabled={action.busy}
-          onClick={() =>
-            update(undefined, user.content_ban ? 'unban' : 'ban')
-          }
+          onClick={() => update(undefined, user.content_ban ? 'unban' : 'ban')}
         >
           {user.content_ban ? '解除内容封禁' : '手动内容封禁'}
         </Button>
@@ -268,23 +440,23 @@ export function ReviewManagement() {
     refetchInterval: 5000,
   });
   return (
-    <section className="space-y-4">
-      <h1>图片审核</h1>
-      <p>自动审核为主。撤销误判会扣回对应次数；手动封禁不会随之解除。</p>
+    <section className="cove-review-page">
+      <div className="cove-heading">
+        <h1>图片审核</h1>
+        <p>自动审核为主。撤销误判会扣回对应次数；手动封禁不会随之解除。</p>
+      </div>
       {query.isError && <p role="alert">{errorText(query.error)}</p>}
       {query.isPending && <p role="status">加载中…</p>}
       {query.data?.items.map((r) => (
         <Card key={r.id}>
-          <CardContent className="space-y-3">
-            <p>
-              {r.username} · {reviewLabels[r.status]} ·{' '}
-              {r.counted ? '已计违规次数' : '未计次数'} · 尝试 {r.attempts} 次
-            </p>
-            <p>
-              {r.reason || '等待处理'} {r.categories.join(' / ')}
-            </p>
+          <CardContent className="cove-review-row">
             {r.image_id ? (
-              <a href={`/i/${r.image_id}`} target="_blank" rel="noreferrer">
+              <a
+                className="cove-review-preview"
+                href={`/i/${r.image_id}`}
+                target="_blank"
+                rel="noreferrer"
+              >
                 <img
                   src={`/api/v1/images/${r.image_id}/thumbnail`}
                   alt="审核图片"
@@ -292,64 +464,82 @@ export function ReviewManagement() {
                 />
               </a>
             ) : (
-              <p>原图已删除，保留审核记录</p>
+              <p className="cove-review-preview cove-muted">
+                原图已删除，保留审核记录
+              </p>
             )}
-            <div className="flex flex-wrap gap-2">
-              <Button
-                disabled={action.busy}
-                onClick={() =>
-                  void action.save(() =>
-                    api(`/admin/reviews/${r.id}`, 'PATCH', {
-                      decision: 'passed',
-                    }),
-                  )
-                }
-              >
-                通过／撤销误判
-              </Button>
-              <Button
-                variant="outline"
-                disabled={action.busy}
-                onClick={() =>
-                  void action.save(() =>
-                    api(`/admin/reviews/${r.id}`, 'PATCH', {
-                      decision: 'blocked',
-                    }),
-                  )
-                }
-              >
-                确认违规
-              </Button>
-              {r.status === 'failed' && (
+            <div className="cove-review-detail">
+              <p>
+                {r.username} · {reviewLabels[r.status]} ·{' '}
+                {r.counted ? '已计违规次数' : '未计次数'} · 尝试 {r.attempts} 次
+              </p>
+              <p>
+                {r.reason || '等待处理'} {r.categories.join(' / ')}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  disabled={action.busy}
+                  onClick={() =>
+                    void action.save(() =>
+                      api(`/admin/reviews/${r.id}`, 'PATCH', {
+                        decision: 'passed',
+                      }),
+                    )
+                  }
+                >
+                  通过／撤销误判
+                </Button>
                 <Button
                   variant="outline"
                   disabled={action.busy}
                   onClick={() =>
                     void action.save(() =>
-                      api(`/admin/reviews/${r.id}/retry`, 'POST'),
+                      api(`/admin/reviews/${r.id}`, 'PATCH', {
+                        decision: 'blocked',
+                      }),
                     )
                   }
                 >
-                  重试审核
+                  确认违规
                 </Button>
-              )}
+                {r.status === 'failed' && (
+                  <Button
+                    variant="outline"
+                    disabled={action.busy}
+                    onClick={() =>
+                      void action.save(() =>
+                        api(`/admin/reviews/${r.id}/retry`, 'POST'),
+                      )
+                    }
+                  >
+                    重试审核
+                  </Button>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
       ))}
-      {query.data && !query.data.items.length && <p>暂无审核记录</p>}
-      <div className="flex gap-3">
-        <Button disabled={page === 1} onClick={() => setPage(page - 1)}>
-          上一页
-        </Button>
-        <span>第 {page} 页</span>
-        <Button
-          disabled={!query.data?.has_more}
-          onClick={() => setPage(page + 1)}
-        >
-          下一页
-        </Button>
-      </div>
+      {query.data && !query.data.items.length && (
+        <div className="cove-empty" role="status">
+          <h2>暂无审核记录</h2>
+          <p>启用图片审核后，新上传图片的审核结果会显示在这里。</p>
+        </div>
+      )}
+      {(page > 1 || !!query.data?.has_more) && (
+        <div className="cove-pagination">
+          <Button disabled={page === 1} onClick={() => setPage(page - 1)}>
+            上一页
+          </Button>
+          <span>第 {page} 页</span>
+          <Button
+            disabled={!query.data?.has_more}
+            onClick={() => setPage(page + 1)}
+          >
+            下一页
+          </Button>
+        </div>
+      )}
     </section>
   );
 }
@@ -402,6 +592,7 @@ function ChatImage({
   );
 }
 export function AiChat() {
+  const messageArea = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
@@ -427,6 +618,11 @@ export function AiChat() {
     enabled: !!selected,
     refetchInterval: 3000,
   });
+  const latest = messages.data?.[messages.data.length - 1];
+  useEffect(() => {
+    const area = messageArea.current;
+    if (area) area.scrollTop = area.scrollHeight;
+  }, [selected, latest?.id, latest?.status]);
   useEffect(() => {
     if (
       messages.data?.some((m) => ['completed', 'failed'].includes(m.status))
@@ -458,11 +654,13 @@ export function AiChat() {
     }
   }
   return (
-    <section className="space-y-4">
-      <h1>AI 图片对话</h1>
-      <p>
-        描述你想要的图片，也可以上传参考图后连续修改。图片保存在图库中，默认私有。
-      </p>
+    <section className="cove-ai-page">
+      <div className="cove-heading">
+        <h1>AI 图片对话</h1>
+        <p>
+          描述你想要的图片，也可以上传参考图后连续修改。图片保存在图库中，默认私有。
+        </p>
+      </div>
       {status.data && (
         <p>
           {status.data.unlimited
@@ -479,7 +677,14 @@ export function AiChat() {
         </p>
       )}
       {status.data && !status.data.enabled && (
-        <p role="status">管理员尚未配置生图 API。</p>
+        <div role="status" className="cove-settings-note">
+          尚未配置生图服务。
+          {me.data?.user.is_admin ? (
+            <Link to="/app/admin/settings#settings-ai">前往配置生图 API</Link>
+          ) : (
+            '请联系管理员配置。'
+          )}
+        </div>
       )}
       {banned && (
         <p role="alert">
@@ -487,8 +692,8 @@ export function AiChat() {
           次；请联系管理员。
         </p>
       )}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="space-y-2" aria-label="历史对话">
+      <div className="cove-chat-layout">
+        <aside className="cove-chat-history" aria-label="历史对话">
           <Button
             disabled={action.busy || banned}
             onClick={() => {
@@ -499,6 +704,9 @@ export function AiChat() {
           >
             新对话
           </Button>
+          {list.data && !list.data.items.length && (
+            <p className="cove-muted">暂无历史对话</p>
+          )}
           {list.isError && <p role="alert">{errorText(list.error)}</p>}
           {list.data?.items.map((c) => (
             <Button
@@ -515,79 +723,110 @@ export function AiChat() {
               {c.title}
             </Button>
           ))}
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              disabled={page === 1}
-              onClick={() => setPage(page - 1)}
-            >
-              上页
-            </Button>
-            <Button
-              variant="outline"
-              disabled={!list.data?.has_more}
-              onClick={() => setPage(page + 1)}
-            >
-              下页
-            </Button>
-          </div>
+          {(page > 1 || !!list.data?.has_more) && (
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                disabled={page === 1}
+                onClick={() => setPage(page - 1)}
+              >
+                上页
+              </Button>
+              <Button
+                variant="outline"
+                disabled={!list.data?.has_more}
+                onClick={() => setPage(page + 1)}
+              >
+                下页
+              </Button>
+            </div>
+          )}
         </aside>
-        <div className="min-w-0 space-y-4">
-          {messages.isError && <p role="alert">{errorText(messages.error)}</p>}
-          {messages.data?.map((m) => (
-            <Card key={m.id}>
-              <CardContent className="space-y-3">
-                <p className="whitespace-pre-wrap break-words">
-                  <strong>你：</strong>
-                  {m.prompt}
+        <div className="cove-chat-main">
+          <div
+            ref={messageArea}
+            className="cove-chat-messages"
+            aria-label="对话消息"
+            aria-live="polite"
+          >
+            {!selected && (
+              <div className="cove-empty">
+                <h2>从一个画面开始</h2>
+                <p>
+                  描述主题、风格和构图，或添加参考图片。生成后可继续描述修改要求。
                 </p>
-                {m.reference_id && (
-                  <ChatImage id={m.reference_id} status={m.reference_status} />
-                )}
-                {m.text && (
+              </div>
+            )}
+            {selected && messages.isPending && (
+              <p role="status">正在加载对话…</p>
+            )}
+            {selected && messages.data?.length === 0 && (
+              <p className="cove-empty">这段对话还没有消息。</p>
+            )}
+            {messages.isError && (
+              <p role="alert">{errorText(messages.error)}</p>
+            )}
+            {messages.data?.map((m) => (
+              <Card key={m.id}>
+                <CardContent className="space-y-3">
                   <p className="whitespace-pre-wrap break-words">
-                    <strong>AI：</strong>
-                    {m.text}
+                    <strong>你：</strong>
+                    {m.prompt}
                   </p>
-                )}
-                {m.image_id && (
-                  <ChatImage
-                    id={m.image_id}
-                    status={m.image_status}
-                    reason={m.image_reason}
-                  />
-                )}
-                {['queued', 'running'].includes(m.status) && (
-                  <p role="status">
-                    {m.status === 'queued' ? '等待生成…' : '正在生成…'}
-                  </p>
-                )}
-                {m.status === 'failed' && (
-                  <div>
-                    <p role="alert">{m.error}</p>
-                    <Button
-                      variant="outline"
-                      disabled={action.busy}
-                      onClick={() => {
-                        setPrompt(m.prompt);
-                        setReference(
-                          m.reference_id
-                            ? {
-                                id: m.reference_id,
-                                original_name: '上次参考图',
-                              }
-                            : null,
-                        );
-                      }}
-                    >
-                      重新填写提示词
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          ))}
-          <form className="cove-form" onSubmit={(event) => void submit(event)}>
+                  {m.reference_id && (
+                    <ChatImage
+                      id={m.reference_id}
+                      status={m.reference_status}
+                    />
+                  )}
+                  {m.text && (
+                    <p className="whitespace-pre-wrap break-words">
+                      <strong>AI：</strong>
+                      {m.text}
+                    </p>
+                  )}
+                  {m.image_id && (
+                    <ChatImage
+                      id={m.image_id}
+                      status={m.image_status}
+                      reason={m.image_reason}
+                    />
+                  )}
+                  {['queued', 'running'].includes(m.status) && (
+                    <p role="status">
+                      {m.status === 'queued' ? '等待生成…' : '正在生成…'}
+                    </p>
+                  )}
+                  {m.status === 'failed' && (
+                    <div>
+                      <p role="alert">{m.error}</p>
+                      <Button
+                        variant="outline"
+                        disabled={action.busy}
+                        onClick={() => {
+                          setPrompt(m.prompt);
+                          setReference(
+                            m.reference_id
+                              ? {
+                                  id: m.reference_id,
+                                  original_name: '上次参考图',
+                                }
+                              : null,
+                          );
+                        }}
+                      >
+                        重新填写提示词
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          <form
+            className="cove-form cove-chat-composer"
+            onSubmit={(event) => void submit(event)}
+          >
             <label>
               参考图片
               <Input
@@ -626,7 +865,7 @@ export function AiChat() {
               </p>
             )}
             <label>
-              消息
+              描述图片或修改要求
               <Textarea
                 disabled={action.busy}
                 value={prompt}
@@ -637,18 +876,20 @@ export function AiChat() {
                 placeholder="生成一张图片，或描述要怎样修改上一张图片…"
               />
             </label>
-            <Button
-              type="submit"
-              disabled={
-                action.busy ||
-                banned ||
-                !!active ||
-                !status.data?.enabled ||
-                !prompt.trim()
-              }
-            >
-              发送
-            </Button>
+            <div className="cove-actions">
+              <Button
+                type="submit"
+                disabled={
+                  action.busy ||
+                  banned ||
+                  !!active ||
+                  !status.data?.enabled ||
+                  !prompt.trim()
+                }
+              >
+                {active ? '正在生成…' : '生成图片'}
+              </Button>
+            </div>
           </form>
         </div>
       </div>
