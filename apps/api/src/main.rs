@@ -1,3 +1,4 @@
+mod ai;
 mod file_jobs;
 mod management;
 mod security;
@@ -87,6 +88,9 @@ struct User {
     is_admin: bool,
     disabled: bool,
     quota_bytes: i64,
+    moderation_exempt: bool,
+    violation_count: i32,
+    content_ban: Option<String>,
     #[serde(skip_serializing)]
     password_hash: String,
     created_at: DateTime<Utc>,
@@ -110,6 +114,9 @@ struct ImageRow {
     created_at: DateTime<Utc>,
     deleted_at: Option<DateTime<Utc>>,
     is_public: bool,
+    moderation_status: String,
+    moderation_reason: String,
+    moderation_hold: bool,
 }
 fn image_dto(row: ImageRow, state: &AppState) -> serde_json::Value {
     let url = format!(
@@ -503,6 +510,7 @@ async fn upload_image(
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let user = authenticate(&headers, &state).await?;
+    ai::can_create(&user)?;
     rate(&state, format!("upload:{}", user.id), 60, 60).await?;
     let _guard = state.uploads.lock().await;
     let mut upload: Option<(String, Bytes)> = None;
@@ -608,6 +616,7 @@ async fn store_image(
     if current.disabled {
         return Err(unauthorized());
     }
+    ai::can_create(&current)?;
     let used: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM images WHERE user_id=$1",
     )
@@ -634,6 +643,7 @@ async fn store_image(
     // Keep a pending row until the file is durable; interrupted uploads remain identifiable for cleanup.
     let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public,storage_root,album_id,import_key,content_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10,$11,$12,$13) RETURNING *")
         .bind(id).bind(user_id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(is_public).bind(&location.path).bind(album_id).bind(import_key).bind(storage::hash(&bytes)).fetch_one(&mut *tx).await.map_err(internal)?;
+    ai::enqueue_review(&mut tx, &current, &row, &storage::hash(&bytes)).await?;
     tx.commit().await.map_err(internal)?;
     let key = row.storage_key.clone();
     tokio::task::spawn_blocking(move || dir.write_new(&key, &bytes))
@@ -645,9 +655,11 @@ async fn store_image(
         .execute(&state.pool)
         .await
         .map_err(internal)?;
-    let mut row = row;
-    row.deleted_at = None;
-    Ok(row)
+    sqlx::query_as("SELECT * FROM images WHERE id=$1")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(internal)
 }
 #[derive(Deserialize)]
 struct ImageUpdate {
@@ -683,18 +695,39 @@ async fn update_visibility(
     Json(input): Json<VisibilityInput>,
 ) -> ApiResult<StatusCode> {
     let user = authenticate(&headers, &state).await?;
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    let current: User = sqlx::query_as("SELECT * FROM users WHERE id=$1 FOR UPDATE")
+        .bind(user.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal)?;
+    if input.is_public {
+        ai::can_create(&current)?;
+    }
+    let row: ImageRow =
+        sqlx::query_as("SELECT * FROM images WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL")
+            .bind(id)
+            .bind(user.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal)?
+            .ok_or_else(missing)?;
+    if input.is_public && matches!(row.moderation_status.as_str(), "blocked" | "review") {
+        return Err(bad("图片被审核限制，不能公开"));
+    }
     let result = sqlx::query(
         "UPDATE images SET is_public=$1 WHERE id=$2 AND user_id=$3 AND deleted_at IS NULL",
     )
     .bind(input.is_public)
     .bind(id)
     .bind(user.id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(internal)?;
     if result.rows_affected() == 0 {
         return Err(missing());
     }
+    tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 async fn remove_file_record(state: &AppState, row: &ImageRow) -> ApiResult<()> {
@@ -967,14 +1000,7 @@ async fn serve_image(
     if key.contains('/') && key != row.storage_key {
         return Err(missing());
     }
-    if !row.is_public {
-        let user = authenticate(&headers, &state)
-            .await
-            .map_err(|_| missing())?;
-        if user.id != row.user_id && !user.is_admin {
-            return Err(missing());
-        }
-    }
+    ai::authorize_image(&state, &headers, &row).await?;
     let bytes = storage::read_image(&state, &row).await?;
     Ok((
         [
@@ -1007,6 +1033,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/v1/settings", get(settings).patch(update_settings))
         .merge(security::routes())
+        .merge(ai::routes())
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/register", post(register))
@@ -1200,7 +1227,10 @@ async fn main() -> anyhow::Result<()> {
     storage::initialize(&state).await?;
     bootstrap(&state).await?;
     let (stop_jobs, stopped) = tokio::sync::watch::channel(false);
-    let worker = tokio::spawn(file_jobs::worker(state.clone(), stopped));
+    let worker = tokio::spawn(file_jobs::worker(state.clone(), stopped.clone()));
+    ai::recover(&state).await?;
+    let review_worker = tokio::spawn(ai::review_worker(state.clone(), stopped.clone()));
+    let generation_worker = tokio::spawn(ai::generation_worker(state.clone(), stopped));
     let listener = tokio::net::TcpListener::bind(
         env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".into()),
     )
@@ -1216,6 +1246,8 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     let _ = stop_jobs.send(true);
     worker.await??;
+    review_worker.await?;
+    generation_worker.await?;
     drop(lock);
     Ok(())
 }

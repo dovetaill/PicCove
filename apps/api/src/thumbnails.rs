@@ -36,14 +36,7 @@ pub async fn serve(
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;
-    if !row.is_public {
-        let user = authenticate(&headers, &state)
-            .await
-            .map_err(|_| missing())?;
-        if user.id != row.user_id && !user.is_admin {
-            return Err(missing());
-        }
-    }
+    ai::authorize_image(&state, &headers, &row).await?;
     let location = storage::image_location(&state, &row).await?;
     let bytes = tokio::task::spawn_blocking(move || {
         let dir = location.open()?;

@@ -6,6 +6,9 @@ export type User = {
   is_admin: boolean;
   disabled: boolean;
   quota_bytes: number;
+  violation_count: number;
+  moderation_exempt: boolean;
+  content_ban: "auto" | "manual" | null;
 };
 export type Account = { user: User; used_bytes: number };
 export type Picture = {
@@ -20,6 +23,9 @@ export type Picture = {
   thumbnail_url: string;
   deleted_at: string | null;
   is_public: boolean;
+  moderation_status: string;
+  moderation_reason: string;
+  moderation_hold: boolean;
 };
 export type Album = { id: string; name: string; description: string | null };
 export type Settings = {

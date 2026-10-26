@@ -13,6 +13,7 @@ import {
   AdminOnly,
 } from '@/piccove/workspace';
 import '@/piccove/style.css';
+import { AiChat, ReviewManagement } from '@/piccove/ai';
 const client = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
 export function App() {
   return (
@@ -26,6 +27,11 @@ export function App() {
             <Route path="/register" element={<Auth register />} />
             <Route path="/app" element={<Workspace />}>
               <Route index element={<Gallery key="own" />} />
+              <Route path="ai" element={<AiChat />} />
+              <Route
+                path="admin/reviews"
+                element={<AdminOnly><ReviewManagement /></AdminOnly>}
+              />
               <Route path="albums" element={<Albums />} />
               <Route path="account" element={<AccountSettings />} />
               <Route

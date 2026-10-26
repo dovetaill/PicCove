@@ -65,6 +65,7 @@ import {
   type Picture,
 } from './api';
 import { Brand } from './public';
+import { AiSettings, UserModerationControls, reviewLabels } from './ai';
 import { AccountProfile, AccountSecurity, type PendingTotp } from './security';
 import { ShareQr } from './share-qr';
 import { SystemSettings } from './system';
@@ -144,6 +145,10 @@ export function Workspace() {
               <Images />
               <span className="cove-nav-text">图片库</span>
             </NavLink>
+            <NavLink to="/app/ai" aria-label="AI 图片对话" title="AI 图片对话">
+              <Images />
+              <span className="cove-nav-text">AI 图片对话</span>
+            </NavLink>
             <NavLink to="/app/albums" aria-label="相册" title="相册">
               <FolderHeart />
               <span className="cove-nav-text">相册</span>
@@ -155,6 +160,10 @@ export function Workspace() {
             {user.is_admin && (
               <>
                 <span className="cove-nav-label">管理控制台</span>
+                <NavLink to="/app/admin/reviews" aria-label="图片审核" title="图片审核">
+                  <ShieldCheck />
+                  <span className="cove-nav-text">图片审核</span>
+                </NavLink>
                 <NavLink
                   to="/app/admin/users"
                   aria-label="用户与配额"
@@ -235,6 +244,9 @@ export function Workspace() {
             </div>
           </header>
           <main className="cove-workmain">
+            {user.content_ban && (
+              <p role="alert">账号因内容违规已封禁（累计 {user.violation_count} 次），不能上传、生图或新增公开分享。请联系管理员。</p>
+            )}
             <Outlet />
           </main>
         </div>
@@ -815,6 +827,8 @@ export function Gallery({ all = false }: { all?: boolean }) {
                 <a href={item.url} target="_blank" rel="noreferrer">
                   {item.deleted_at ? (
                     <span>待清理 · 请重试删除</span>
+                  ) : ['blocked', 'review'].includes(item.moderation_status) && !me.data?.user.is_admin ? (
+                    <span>{item.moderation_reason || '图片被审核限制'}</span>
                   ) : (
                     <img
                       src={item.thumbnail_url || item.url}
@@ -838,6 +852,9 @@ export function Gallery({ all = false }: { all?: boolean }) {
               </div>
               <CardContent>
                 <h3 title={item.original_name}>{item.original_name}</h3>
+                <small title={item.moderation_reason}>
+                  {reviewLabels[item.moderation_status] || '未审核'}
+                </small>
                 {!item.is_public && <small>私有 · 本人及管理员可见</small>}
                 <p>
                   {item.width} × {item.height}
@@ -1333,6 +1350,7 @@ export function RegistrationSettings() {
       />
       <div className="cove-settings-layout">
         <nav className="cove-settings-nav" aria-label="设置分类">
+          <a href="#settings-ai">AI 生图与审核</a>
           <a href="#settings-registration">用户注册</a>
           <a href="#settings-storage">存储位置</a>
           <a href="#settings-migration">图片迁移</a>
@@ -1341,6 +1359,7 @@ export function RegistrationSettings() {
           <a href="#settings-system">版本与服务</a>
         </nav>
         <div className="cove-settings-content">
+          <AiSettings />
           <Card id="settings-registration" className="cove-settings-card">
             <CardContent>
               <div className="cove-setting">
@@ -1431,6 +1450,7 @@ export function UserManagement() {
                   <tr>
                     <th>用户</th>
                     <th>状态</th>
+                    <th>内容审核</th>
                     <th>已用 / 配额</th>
                     <th>操作</th>
                   </tr>
@@ -1448,6 +1468,9 @@ export function UserManagement() {
                         >
                           {account.user.disabled ? '已禁用' : '正常'}
                         </span>
+                      </td>
+                      <td>
+                        <UserModerationControls user={account.user} />
                       </td>
                       <td>
                         {size(account.used_bytes)} /{' '}

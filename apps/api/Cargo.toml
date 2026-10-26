@@ -1,11 +1,12 @@
 [package]
 name = "piccove-api"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 default-run = "piccove-api"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 axum = { version = "0.8", features = ["multipart"] }
 chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
