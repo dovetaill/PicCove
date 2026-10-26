@@ -21,7 +21,7 @@ export type Picture = {
   deleted_at: string | null;
   is_public: boolean;
 };
-export type Album = { id: string; name: string };
+export type Album = { id: string; name: string; description: string | null };
 export type Settings = {
   registration_open: boolean;
   contact_url: string | null;

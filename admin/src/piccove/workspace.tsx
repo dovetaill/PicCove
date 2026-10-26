@@ -23,12 +23,20 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Outlet,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -43,6 +51,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
   api,
@@ -56,7 +65,7 @@ import {
   type Picture,
 } from './api';
 import { Brand } from './public';
-import { AccountSecurity } from './security';
+import { AccountProfile, AccountSecurity, type PendingTotp } from './security';
 import { ShareQr } from './share-qr';
 import { SystemSettings } from './system';
 import { UploadProvider, useUploads } from './upload-manager';
@@ -284,7 +293,11 @@ function Heading({
 }
 export function Gallery({ all = false }: { all?: boolean }) {
   const [page, setPage] = useState(1);
-  const [album, setAlbum] = useState('all');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const album = all ? 'all' : (searchParams.get('album') || 'all').toLowerCase();
+  const invalidAlbum =
+    album !== 'all' &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(album);
   const [copying, setCopying] = useState<Picture[]>([]);
   const [qr, setQr] = useState<Picture | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -312,11 +325,17 @@ export function Gallery({ all = false }: { all?: boolean }) {
   });
   const images = useQuery({
     queryKey: ['images', all, album, page],
+    enabled: !invalidAlbum,
     queryFn: () =>
       api<Page<Picture>>(
-        `/images?page=${page}&all=${all}${album !== 'all' ? `&album_id=${album}` : ''}`,
+        `/images?page=${page}&all=${all}${album !== 'all' ? `&album_id=${encodeURIComponent(album)}` : ''}`,
       ),
   });
+  const missingAlbum =
+    invalidAlbum ||
+    (album !== 'all' &&
+      albums.isSuccess &&
+      !albums.data.some((item) => item.id === album));
   const items = images.data?.items || [];
   const chosen = items.filter((item) => selected.includes(item.id));
   const activeUpload = queue.find((item) =>
@@ -335,9 +354,21 @@ export function Gallery({ all = false }: { all?: boolean }) {
       setSelected([]);
     }
   }, [images.isPending, images.isFetching, images.isError, items.length, page]);
+  useEffect(() => {
+    setPage(1);
+    setSelected([]);
+  }, [album]);
   function handleUpload(files: FileList | File[]) {
     if (action.busy) {
       toast.info('正在处理，请稍等片刻再添加图片');
+      return;
+    }
+    if (missingAlbum) {
+      toast.error('该相册已不存在或无权访问，请重新选择相册后上传');
+      return;
+    }
+    if (album !== 'all' && (!albums.isSuccess || albums.isFetching)) {
+      toast.error('请等待相册加载成功后再上传');
       return;
     }
     upload(files, album);
@@ -352,6 +383,17 @@ export function Gallery({ all = false }: { all?: boolean }) {
       return;
     }
     setCopying(pictures);
+  }
+  function copyDirect(pictures: Picture[]) {
+    if (pictures.some((item) => item.deleted_at)) {
+      toast.error('待清理图片的链接已失效，请取消选择后重试');
+      return;
+    }
+    if (pictures.some((item) => !item.is_public)) {
+      toast.error('所选图片中有私有图片。如需分享，请先在安卓端将它设为公开');
+      return;
+    }
+    void copy(pictures.map((item) => item.url).join('\n'));
   }
   async function copy(text: string) {
     try {
@@ -509,76 +551,107 @@ export function Gallery({ all = false }: { all?: boolean }) {
           {firstUploadError && (
             <p className="cove-error cove-upload-error" role="alert">
               {firstUploadError.file.name}：{firstUploadError.error}
-              <span className="block">
-                展开上传明细，可以查看每张图片的结果。
-              </span>
             </p>
           )}
-          <details className="cove-upload-details">
-            <summary>查看上传明细（{queue.length} 项）</summary>
-            <ul>
-              {queue.map((item) => (
-                <li key={item.id}>
-                  <div className="cove-upload-file">
-                    <span
-                      title={item.file.webkitRelativePath || item.file.name}
-                    >
-                      {item.file.webkitRelativePath || item.file.name}
-                    </span>
-                    <span
-                      className={
-                        item.status === '失败' ? 'cove-error' : 'cove-muted'
-                      }
-                    >
-                      {item.status === '上传中'
-                        ? `上传中 ${item.progress}%`
-                        : item.status === '等待重试'
-                          ? '等待重试'
-                          : item.status}
-                    </span>
-                  </div>
-                  {['上传中', '服务器处理中'].includes(item.status) && (
-                    <progress
-                      aria-label={`${item.file.name} 传输进度`}
-                      max={100}
-                      value={item.progress}
+          {queue.some(
+            (item) => !['完成', '已存在'].includes(item.status),
+          ) && (
+            <details className="cove-upload-details">
+              <summary>未完成上传（{queue.length} 项）</summary>
+              <ul className="cove-upload-list">
+                {queue
+                  .filter(
+                    (item) => !['完成', '已存在'].includes(item.status),
+                  )
+                  .map((item) => (
+                    <li key={item.id}>
+                      <div className="cove-upload-file">
+                        <span
+                          title={item.file.webkitRelativePath || item.file.name}
+                        >
+                          {item.file.webkitRelativePath || item.file.name}
+                        </span>
+                        <span className="cove-error">
+                          {item.status === '上传中'
+                            ? `上传中 ${item.progress}%`
+                            : item.status}
+                        </span>
+                      </div>
+                      {['上传中', '服务器处理中'].includes(item.status) && (
+                        <progress
+                          aria-label={`${item.file.name} 传输进度`}
+                          max={100}
+                          value={item.progress}
+                        />
+                      )}
+                      {item.status === '服务器处理中' && (
+                        <p className="cove-muted">图片已传完，正在保存…</p>
+                      )}
+                      {item.error && (
+                        <p className="cove-error">{item.error}</p>
+                      )}
+                    </li>
+                  ))}
+              </ul>
+            </details>
+          )}
+          {queue.some((item) => item.image?.deleted_at) && (
+            <p className="cove-muted">
+              已删除图片的结果卡片会自动移除，链接也随之失效。
+            </p>
+          )}
+          <div className="cove-upload-results">
+            {queue.map((item) =>
+              item.image && !item.image.deleted_at ? (
+                <Card key={item.id} className="cove-upload-card">
+                  <a
+                    className="cove-upload-thumb"
+                    href={item.image.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`查看原图 ${item.image.original_name}`}
+                  >
+                    <img
+                      alt={item.image.original_name}
+                      src={item.image.thumbnail_url || item.image.url}
+                      loading="lazy"
                     />
-                  )}
-                  {item.status === '服务器处理中' && (
-                    <p className="cove-muted">图片已传完，正在保存…</p>
-                  )}
-                  {item.status === '已存在' && (
-                    <p className="cove-muted">
-                      图库里已有这张图片，没有重复保存。原来的名称、相册和公开状态都不变。
+                  </a>
+                  <CardContent>
+                    <h3 title={item.image.original_name}>
+                      {item.image.original_name}
+                    </h3>
+                    <p>
+                      {item.image.width} × {item.image.height}
+                      <span>{size(item.image.size_bytes)}</span>
                     </p>
-                  )}
-                  {item.image && (
-                    <div className="cove-upload-result">
-                      <a href={item.image.url} target="_blank" rel="noreferrer">
-                        查看原图：{item.image.original_name}
-                      </a>
+                    <small className="cove-muted">
+                      {item.status === '已存在'
+                        ? '图库已有同图，原名称、相册和公开状态保持不变'
+                        : '已保存到图库'}
+                    </small>
+                    <div className="cove-image-actions">
                       <Button
-                        variant="outline"
-                        disabled={
-                          !item.image.is_public || !!item.image.deleted_at
-                        }
-                        onClick={() => showLinks([item.image!])}
+                        variant="ghost"
+                        disabled={!item.image.is_public}
+                        onClick={() => copyDirect([item.image!])}
                       >
                         <Copy />
-                        复制链接
+                        复制直链
                       </Button>
-                      {!item.image.is_public && (
-                        <span className="cove-muted">
-                          这张图片仅你和管理员可见。如需分享，请先在安卓端将它设为公开。
-                        </span>
-                      )}
+                      <Button
+                        variant="ghost"
+                        disabled={!item.image.is_public}
+                        onClick={() => showLinks([item.image!])}
+                      >
+                        嵌入格式
+                      </Button>
                     </div>
-                  )}
-                  {item.error && <p className="cove-error">{item.error}</p>}
-                </li>
-              ))}
-            </ul>
-          </details>
+                  </CardContent>
+                </Card>
+              ) : null,
+            )}
+          </div>
           {queue.some((item) => ['失败', '等待重试'].includes(item.status)) && (
             <Button
               variant="outline"
@@ -599,7 +672,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
             <Select
               value={album}
               onValueChange={(value) => {
-                setAlbum(value);
+                setSearchParams(value === 'all' ? {} : { album: value });
                 setPage(1);
                 setSelected([]);
               }}
@@ -609,6 +682,11 @@ export function Gallery({ all = false }: { all?: boolean }) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">全部相册</SelectItem>
+                {missingAlbum && (
+                  <SelectItem value={album} disabled>
+                    相册不可用
+                  </SelectItem>
+                )}
                 {albums.data?.map((item) => (
                   <SelectItem key={item.id} value={item.id}>
                     {item.name}
@@ -622,6 +700,11 @@ export function Gallery({ all = false }: { all?: boolean }) {
       {albums.isError && !all && (
         <p role="alert" className="cove-error">
           相册加载失败，请刷新重试。
+        </p>
+      )}
+      {missingAlbum && (
+        <p role="alert" className="cove-error">
+          该相册已不存在或无权访问，请重新选择相册后上传。
         </p>
       )}
       <div className="cove-batch">
@@ -641,10 +724,17 @@ export function Gallery({ all = false }: { all?: boolean }) {
         <Button
           variant="outline"
           disabled={!chosen.length}
-          onClick={() => showLinks(chosen)}
+          onClick={() => copyDirect(chosen)}
         >
           <Copy />
-          复制链接
+          复制直链
+        </Button>
+        <Button
+          variant="outline"
+          disabled={!chosen.length}
+          onClick={() => showLinks(chosen)}
+        >
+          嵌入格式
         </Button>
         <Button
           variant="outline"
@@ -690,7 +780,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
           </>
         )}
       </div>
-      {images.isPending ? (
+      {invalidAlbum ? null : images.isPending ? (
         <p role="status">正在读取图库…</p>
       ) : images.isError ? (
         <p role="alert" className="cove-error">
@@ -762,7 +852,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
                   <Button
                     variant="ghost"
                     disabled={!!item.deleted_at}
-                    onClick={() => showLinks([item])}
+                    onClick={() => copyDirect([item])}
                     aria-label={`复制 ${item.original_name} 链接`}
                   >
                     <Copy />
@@ -966,6 +1056,7 @@ export function Albums() {
   });
   const action = useAction();
   const [deleting, setDeleting] = useState<Album | null>(null);
+  const [editing, setEditing] = useState<Album | null>(null);
   return (
     <>
       <Heading
@@ -979,9 +1070,12 @@ export function Albums() {
             onSubmit={(event) => {
               event.preventDefault();
               const form = event.currentTarget;
-              const name = new FormData(form).get('name');
+              const values = new FormData(form);
               void action.run(async () => {
-                await api('/albums', 'POST', { name });
+                await api('/albums', 'POST', {
+                  name: values.get('name'),
+                  description: values.get('description'),
+                });
                 form.reset();
               }, '相册已创建');
             }}
@@ -992,6 +1086,13 @@ export function Albums() {
               required
               maxLength={100}
               placeholder="给新相册起个名字"
+            />
+            <Textarea
+              name="description"
+              aria-label="相册描述（可选）"
+              maxLength={500}
+              rows={2}
+              placeholder="这个相册用来放什么（可选）"
             />
             <Button type="submit" disabled={action.busy}>
               创建相册
@@ -1010,11 +1111,26 @@ export function Albums() {
           <Card key={album.id}>
             <CardContent>
               <FolderHeart />
-              <h2>{album.name}</h2>
-              <Button variant="outline" onClick={() => setDeleting(album)}>
-                <Trash2 />
-                删除相册
-              </Button>
+              <Link to={`/app?album=${album.id}`}>{album.name}</Link>
+              {album.description && <p>{album.description}</p>}
+              <div className="cove-album-actions">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`编辑相册 ${album.name}`}
+                  onClick={() => setEditing(album)}
+                >
+                  <Pencil />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`删除相册 ${album.name}`}
+                  onClick={() => setDeleting(album)}
+                >
+                  <Trash2 />
+                </Button>
+              </div>
             </CardContent>
           </Card>
         ))}
@@ -1047,6 +1163,61 @@ export function Albums() {
           >
             确认删除相册
           </Button>
+          <DialogClose asChild>
+            <Button variant="outline" disabled={action.busy}>
+              取消
+            </Button>
+          </DialogClose>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={!!editing}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>编辑相册</DialogTitle>
+            <DialogDescription>修改名称和描述，外链不受影响。</DialogDescription>
+          </DialogHeader>
+          <form
+            className="cove-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const form = event.currentTarget;
+              const values = new FormData(form);
+              void action.run(async () => {
+                await api(`/albums/${editing?.id}`, 'PATCH', {
+                  name: values.get('name'),
+                  description: values.get('description'),
+                });
+                setEditing(null);
+              }, '相册已更新');
+            }}
+          >
+            <label>
+              名称
+              <Input
+                name="name"
+                defaultValue={editing?.name}
+                required
+                maxLength={100}
+              />
+            </label>
+            <label>
+              描述
+              <Textarea
+                name="description"
+                defaultValue={editing?.description || ''}
+                maxLength={500}
+                rows={3}
+              />
+            </label>
+            <Button type="submit" disabled={action.busy}>
+              保存
+            </Button>
+          </form>
         </DialogContent>
       </Dialog>
     </>
@@ -1055,6 +1226,7 @@ export function Albums() {
 export function AccountSettings() {
   const action = useAction();
   const navigate = useNavigate();
+  const [pendingTotp, setPendingTotp] = useState<PendingTotp>(null);
   return (
     <>
       <Heading
@@ -1062,63 +1234,90 @@ export function AccountSettings() {
         description="管理登录用户名、密码与验证方式。"
       />
       <Card className="cove-account">
-        <AccountSecurity />
-        <section className="cove-account-section">
-          <h2>修改密码</h2>
-          <form
-            className="cove-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const form = new FormData(event.currentTarget);
-              void action.run(async () => {
-                await api('/me/password', 'POST', {
-                  current_password: form.get('current'),
-                  password: form.get('password'),
-                  code: form.get('code') || '',
-                });
-                navigate('/login');
-              }, '密码已更新，请重新登录');
-            }}
-          >
-            <label>
-              当前密码
-              <Input
-                name="current"
-                type="password"
-                autoComplete="current-password"
-                required
-              />
-            </label>
-            <label>
-              新密码
-              <Input
-                name="password"
-                type="password"
-                autoComplete="new-password"
-                aria-describedby="new-password-hint"
-                maxLength={128}
-                required
-              />
-            </label>
-            <p id="new-password-hint" className="cove-muted">
-              建议使用至少 12 位的字母、数字和符号组合。
-            </p>
-            <label>
-              动态验证码（开启二步验证后填写）
-              <Input
-                name="code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                pattern="[0-9]{6}"
-                maxLength={6}
-              />
-            </label>
-            <Button disabled={action.busy} type="submit">
-              更新密码
-            </Button>
-            <p className="cove-muted">修改密码后，所有设备需重新登录。</p>
-          </form>
-        </section>
+        <Tabs defaultValue="profile">
+          <TabsList variant="line" className="px-5 pt-4 md:px-7">
+            <TabsTrigger value="profile">账号资料</TabsTrigger>
+            <TabsTrigger value="security">登录与安全</TabsTrigger>
+          </TabsList>
+          <TabsContent value="profile">
+            <AccountProfile />
+          </TabsContent>
+          <TabsContent value="security">
+            <AccountSecurity pending={pendingTotp} setPending={setPendingTotp} />
+            <section className="cove-account-section">
+              <h2>修改密码</h2>
+              <form
+                className="cove-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const form = event.currentTarget;
+                  if (!form.reportValidity()) return;
+                  const values = new FormData(form);
+                  if (values.get('password') !== values.get('confirm')) {
+                    toast.error('两次输入的新密码不一致');
+                    return;
+                  }
+                  void action.run(async () => {
+                    await api('/me/password', 'POST', {
+                      current_password: values.get('current'),
+                      password: values.get('password'),
+                      code: values.get('code') || '',
+                    });
+                    navigate('/login');
+                  }, '密码已更新，请重新登录');
+                }}
+              >
+                <label>
+                  当前密码
+                  <Input
+                    name="current"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                  />
+                </label>
+                <label>
+                  新密码
+                  <Input
+                    name="password"
+                    type="password"
+                    autoComplete="new-password"
+                    aria-describedby="new-password-hint"
+                    maxLength={128}
+                    required
+                  />
+                </label>
+                <label>
+                  确认新密码
+                  <Input
+                    name="confirm"
+                    type="password"
+                    autoComplete="new-password"
+                    maxLength={128}
+                    required
+                  />
+                </label>
+                <p id="new-password-hint" className="cove-muted">
+                  建议使用至少 12 位的字母、数字和符号组合。
+                </p>
+                <label>
+                  动态验证码（开启二步验证后填写）
+                  <Input
+                    name="code"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                  />
+                </label>
+                <Button disabled={action.busy} type="submit">
+                  更新密码
+                </Button>
+                <p className="cove-muted">修改密码后，所有设备需重新登录。</p>
+              </form>
+            </section>
+          </TabsContent>
+        </Tabs>
       </Card>
     </>
   );

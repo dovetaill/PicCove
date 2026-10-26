@@ -19,7 +19,7 @@ export function App() {
     <QueryClientProvider client={client}>
       <ThemeProvider attribute="class" forcedTheme="light">
         <BrowserRouter>
-          <Toaster />
+          <Toaster position="top-right" theme="light" />
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/login" element={<Auth />} />

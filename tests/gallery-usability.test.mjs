@@ -101,6 +101,10 @@ try {
   const uploadUrls = [];
   let paged = false;
   let lastPageImage = true;
+  let holdAlbums = false;
+  let releaseAlbums;
+  const albumId = "abcdefab-1234-4567-890a-abcdefabcdef";
+  const imageQueryAlbums = [];
   await page.route("**/*", async (route) => {
     const u = new URL(route.request().url());
     if (u.hostname !== "127.0.0.1") return route.abort();
@@ -127,8 +131,15 @@ try {
       });
     if (path === "/settings")
       return json({ registration_open: false, contact_url: null });
-    if (path === "/albums") return json([{ id: "album", name: "目标相册" }]);
-    if (path === "/images" && method === "GET")
+    if (path === "/albums") {
+      if (holdAlbums) {
+        releaseAlbums = () => json([{ id: albumId, name: "目标相册" }]);
+        return;
+      }
+      return json([{ id: albumId, name: "目标相册" }]);
+    }
+    if (path === "/images" && method === "GET") {
+      imageQueryAlbums.push(u.searchParams.get("album_id"));
       return json(
         paged
           ? {
@@ -142,6 +153,7 @@ try {
             }
           : { items: images, has_more: false },
       );
+    }
     if (path === "/images" && method === "POST") {
       uploadUrls.push(u.searchParams.get("album_id"));
       holds.push(() =>
@@ -170,6 +182,10 @@ try {
       });
     if (path === "/me/passkeys/start")
       return json({ error: "模拟取消Passkey创建" }, 400);
+    if (path === "/me/password") {
+      assert.equal(route.request().postDataJSON().password, "中文密码abcd");
+      return json({ error: "测试已收到多字节密码" }, 400);
+    }
     if (path === "/me/totp/start")
       return json({ secret: `SECRET${++starts}`, uri: "otpauth://test" });
     if (path === "/me/totp/confirm")
@@ -203,7 +219,7 @@ try {
   await page.getByRole("checkbox", { name: "选择本页" }).check();
   await page
     .locator(".cove-batch")
-    .getByRole("button", { name: "复制链接" })
+    .getByRole("button", { name: "复制直链" })
     .click();
   await page.waitForFunction(() =>
     window.__toasts?.some((s) => s.includes("待清理")),
@@ -287,14 +303,15 @@ try {
   assert(holds.length, "upload request must arrive");
   await holds.shift()();
   const queue = page.getByRole("region", { name: "上传队列" });
-  async function openQueueDetails() {
-    const details = queue.locator("details");
-    if (!(await details.evaluate((e) => e.open)))
-      await details.locator("summary").click();
-  }
-  await openQueueDetails();
-  await queue.getByRole("link", { name: "查看原图：a.png" }).waitFor();
-  await queue.getByRole("button", { name: "复制链接" }).click();
+  await queue
+    .locator(".cove-upload-card", { hasText: "a.png" })
+    .getByRole("button", { name: "复制直链" })
+    .click();
+  await page.waitForFunction(() => window.__toasts?.includes("链接已复制"));
+  await queue
+    .locator(".cove-upload-card", { hasText: "a.png" })
+    .getByRole("button", { name: "嵌入格式" })
+    .click();
   await page.getByRole("dialog").waitFor();
   assert.equal(await page.getByRole("dialog").locator("textarea").count(), 6);
   await page.keyboard.press("Escape");
@@ -313,7 +330,7 @@ try {
   await page.waitForFunction(() =>
     window.__toasts?.includes("模拟文件清理失败"),
   );
-  assert.equal(await queue.getByRole("link").count(), 0);
+  assert.equal(await queue.locator(".cove-upload-card").count(), 0);
   await page.keyboard.press("Escape");
   console.log("PASS failed delete removes all duplicate upload result links");
   resultImage = pic("private", { is_public: false });
@@ -326,15 +343,15 @@ try {
     await new Promise((r) => setTimeout(r, 10));
   assert(holds.length, "upload request must arrive");
   await holds.shift()();
-  await openQueueDetails();
-  await queue.getByRole("link", { name: "查看原图：private.png" }).waitFor();
+  await queue
+    .locator(".cove-upload-card", { hasText: "private.png" })
+    .waitFor();
   assert.equal(
-    await queue.getByRole("button", { name: "复制链接" }).isDisabled(),
+    await queue
+      .locator(".cove-upload-card", { hasText: "private.png" })
+      .getByRole("button", { name: "复制直链" })
+      .isDisabled(),
     true,
-  );
-  assert.equal(
-    await queue.getByRole("link").getAttribute("href"),
-    resultImage.url,
   );
   deleteFail = false;
   await page
@@ -342,7 +359,7 @@ try {
     .click();
   await page.getByRole("button", { name: "确认永久删除" }).click();
   await page.waitForFunction(() => window.__toasts?.includes("图片已删除"));
-  assert.equal(await queue.getByRole("link").count(), 0);
+  assert.equal(await queue.locator(".cove-upload-card").count(), 0);
   console.log(
     "PASS private upload view/copy restriction and successful delete queue cleanup",
   );
@@ -368,10 +385,11 @@ try {
   for (let n = 0; !holds.length && n < 500; n++)
     await new Promise((r) => setTimeout(r, 10));
   assert(holds.length);
-  assert.equal(uploadUrls.at(-1), "album");
+  assert.equal(uploadUrls.at(-1), albumId);
   await holds.shift()();
-  await openQueueDetails();
-  await queue.getByRole("link", { name: "查看原图：retry.png" }).waitFor();
+  await queue
+    .locator(".cove-upload-card", { hasText: "retry.png" })
+    .waitFor();
   console.log(
     "PASS failed upload retry retains original album after filter changes",
   );
@@ -415,8 +433,9 @@ try {
   assert(holds.length);
   resultImage = pic("waiting");
   await holds.shift()();
-  await openQueueDetails();
-  await queue.getByRole("link", { name: "查看原图：waiting.png" }).waitFor();
+  await queue
+    .locator(".cove-upload-card", { hasText: "waiting.png" })
+    .waitFor();
   assert.equal(uploadUrls.length, uploadsBefore + 2);
   console.log(
     "PASS 429 pauses remaining files, enforces cooldown and retries both",
@@ -460,6 +479,43 @@ try {
   console.log(
     "PASS empty final page after deletion automatically returns to previous page",
   );
+  holdAlbums = true;
+  const albumRequest = page.waitForRequest((request) => request.url().endsWith("/api/v1/albums"));
+  await page.goto(`http://127.0.0.1:${port}/app?album=00000000-0000-0000-0000-000000000001`);
+  await albumRequest;
+  await page.locator("input[type=file]").first().setInputFiles({ ...file, name: "loading-album.png" });
+  await page.waitForFunction(() => window.__toasts?.includes("请等待相册加载成功后再上传"));
+  assert.equal(await page.getByRole("region", { name: "上传队列" }).count(), 0);
+  holdAlbums = false;
+  await releaseAlbums();
+  await page.getByRole("alert").filter({ hasText: "该相册已不存在或无权访问" }).waitFor();
+  const uploadsBeforeMissingAlbum = uploadUrls.length;
+  const unexpectedUpload = page.waitForRequest(
+    (request) => request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/images",
+    { timeout: 300 },
+  ).then(() => true, (error) => {
+    if (error.name !== "TimeoutError") throw error;
+    return false;
+  });
+  await page.locator("input[type=file]").first().setInputFiles({ ...file, name: "missing-album.png" });
+  await page.waitForFunction(() => window.__toasts?.includes("该相册已不存在或无权访问，请重新选择相册后上传"));
+  assert.equal(await page.getByRole("region", { name: "上传队列" }).count(), 0);
+  assert.equal(await unexpectedUpload, false);
+  assert.equal(uploadUrls.length, uploadsBeforeMissingAlbum);
+  await page.getByRole("combobox", { name: "筛选相册" }).click();
+  await page.getByRole("option", { name: "全部相册", exact: true }).click();
+  assert.equal(new URL(page.url()).searchParams.has("album"), false);
+  assert.equal(await page.getByRole("alert").filter({ hasText: "该相册已不存在或无权访问" }).count(), 0);
+  console.log("PASS missing album blocks upload and allows selecting another destination");
+  await page.goto(`http://127.0.0.1:${port}/app?album=${albumId.toUpperCase()}`);
+  await page.getByRole("combobox", { name: "筛选相册" }).filter({ hasText: "目标相册" }).waitFor();
+  await page.getByRole("button", { name: "复制 first.png 链接" }).waitFor();
+  assert.equal(imageQueryAlbums.at(-1), albumId);
+  const queriesBeforeInvalidAlbum = imageQueryAlbums.length;
+  await page.goto(`http://127.0.0.1:${port}/app?album=${albumId}%23extra`);
+  await page.getByRole("alert").filter({ hasText: "该相册已不存在或无权访问" }).waitFor();
+  assert.equal(imageQueryAlbums.length, queriesBeforeInvalidAlbum);
+  assert.equal(await page.getByText("正在读取图库…", { exact: true }).count(), 0);
   await page.goto(`http://127.0.0.1:${port}/app/account`);
   const form = page.locator("form.cove-security");
   await form.waitFor();
@@ -475,6 +531,15 @@ try {
   );
   await form.locator("[name=current_password]").fill("password12345");
   await form.locator("[name=username]").fill("invalid name");
+  await form.getByRole("button", { name: "保存用户名" }).click();
+  assert.equal(countPosts(), before);
+  await form.locator("[name=username]").fill("valid_name");
+  await form.getByRole("button", { name: "保存用户名" }).click();
+  await page.waitForFunction(() => window.__toasts?.includes("用户名已更新"));
+  assert(calls.some(([, path]) => path === "/me/username"));
+  await page.getByRole("tab", { name: "登录与安全", exact: true }).click();
+  await form.getByRole("button", { name: "绑定验证器", exact: true }).waitFor();
+  await form.locator("[name=current_password]").fill("password12345");
   await form
     .getByRole("button", { name: "删除 Passkey 设备", exact: true })
     .click();
@@ -485,12 +550,12 @@ try {
   await form.locator("[name=current_password]").fill("password12345");
   await form.getByRole("button", { name: "绑定验证器", exact: true }).click();
   await form.getByText("SECRET1", { exact: true }).waitFor();
-  await form.locator("[name=username]").fill("valid_name");
-  await form.getByRole("button", { name: "保存用户名" }).click();
-  await page.waitForFunction(
-    () => !document.querySelector("button[value=username]").disabled,
-  );
-  assert(calls.some(([m, p]) => p === "/me/username"));
+  await page.getByRole("tab", { name: "账号资料", exact: true }).click();
+  await form.getByRole("button", { name: "保存用户名" }).waitFor();
+  await page.getByRole("tab", { name: "登录与安全", exact: true }).click();
+  await form.getByText("SECRET1", { exact: true }).waitFor();
+  await form.getByRole("button", { name: "确认开启二步验证", exact: true }).waitFor();
+  assert.equal(starts, 1);
   await form.locator("[name=current_password]").fill("password12345");
   await form.getByRole("button", { name: "重新绑定", exact: true }).click();
   await form.getByText("SECRET2", { exact: true }).waitFor();
@@ -532,6 +597,13 @@ try {
   console.log(
     "PASS Passkey-name Enter, TOTP Enter and IME guard target only the intended action",
   );
+  const passwordForm = page.locator("form").filter({ has: page.locator('[name="confirm"]') });
+  await passwordForm.locator('[name="current"]').fill("password12345");
+  await passwordForm.locator('[name="password"]').pressSequentially("中文密码abcd");
+  await passwordForm.locator('[name="confirm"]').pressSequentially("中文密码abcd");
+  await passwordForm.getByRole("button", { name: "更新密码" }).click();
+  await page.waitForFunction(() => window.__toasts?.includes("测试已收到多字节密码"));
+  assert(calls.some(([method, path]) => method === "POST" && path === "/me/password"));
   enabled = true;
   await page.reload();
   await form.waitFor();

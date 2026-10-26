@@ -504,12 +504,7 @@ async fn upload_image(
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let user = authenticate(&headers, &state).await?;
     rate(&state, format!("upload:{}", user.id), 60, 60).await?;
-    let _guard = state.uploads.try_lock().map_err(|_| {
-        ApiError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "正在处理其他图片，请稍后重试".into(),
-        )
-    })?;
+    let _guard = state.uploads.lock().await;
     let mut upload: Option<(String, Bytes)> = None;
     while let Some(field) = multipart
         .next_field()
@@ -745,10 +740,12 @@ async fn delete_image(
 struct Album {
     id: Uuid,
     name: String,
+    description: Option<String>,
 }
 #[derive(Deserialize)]
 struct AlbumInput {
     name: String,
+    description: Option<String>,
 }
 async fn albums(
     State(state): State<Arc<AppState>>,
@@ -756,7 +753,7 @@ async fn albums(
 ) -> ApiResult<Json<Vec<Album>>> {
     let user = authenticate(&headers, &state).await?;
     Ok(Json(
-        sqlx::query_as("SELECT id,name FROM albums WHERE user_id=$1 ORDER BY name,id")
+        sqlx::query_as("SELECT id,name,description FROM albums WHERE user_id=$1 ORDER BY name,id")
             .bind(user.id)
             .fetch_all(&state.pool)
             .await
@@ -769,19 +766,54 @@ async fn create_album(
     Json(input): Json<AlbumInput>,
 ) -> ApiResult<(StatusCode, Json<Album>)> {
     let user = authenticate(&headers, &state).await?;
+    let (name, description) = album_fields(&input)?;
+    let row = sqlx::query_as(
+        "INSERT INTO albums(id,user_id,name,description) VALUES($1,$2,$3,$4) RETURNING id,name,description",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user.id)
+    .bind(name)
+    .bind(description)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal)?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+async fn update_album(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<AlbumInput>,
+) -> ApiResult<Json<Album>> {
+    let user = authenticate(&headers, &state).await?;
+    let (name, description) = album_fields(&input)?;
+    let row = sqlx::query_as(
+        "UPDATE albums SET name=$3,description=$4 WHERE id=$1 AND user_id=$2 RETURNING id,name,description",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(name)
+    .bind(description)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal)?
+    .ok_or_else(missing)?;
+    Ok(Json(row))
+}
+fn album_fields(input: &AlbumInput) -> ApiResult<(&str, Option<&str>)> {
     let name = input.name.trim();
     if name.is_empty() || name.chars().count() > 100 {
         return Err(bad("相册名称须为 1–100 字符"));
     }
-    let row =
-        sqlx::query_as("INSERT INTO albums(id,user_id,name) VALUES($1,$2,$3) RETURNING id,name")
-            .bind(Uuid::new_v4())
-            .bind(user.id)
-            .bind(name)
-            .fetch_one(&state.pool)
-            .await
-            .map_err(internal)?;
-    Ok((StatusCode::CREATED, Json(row)))
+    let description = input
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if description.is_some_and(|value| value.chars().count() > 500) {
+        return Err(bad("相册描述不能超过 500 字符"));
+    }
+    Ok((name, description))
 }
 async fn delete_album(
     State(state): State<Arc<AppState>>,
@@ -987,7 +1019,10 @@ fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/albums", get(albums).post(create_album))
         .route("/api/v1/images/{id}/visibility", patch(update_visibility))
-        .route("/api/v1/albums/{id}", axum::routing::delete(delete_album))
+        .route(
+            "/api/v1/albums/{id}",
+            patch(update_album).delete(delete_album),
+        )
         .route("/api/v1/admin/users", get(users).post(create_user))
         .route("/api/v1/admin/users/{id}", patch(update_user))
         .route("/i/{*key}", get(serve_image))

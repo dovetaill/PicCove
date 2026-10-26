@@ -170,7 +170,7 @@ pub async fn albums(
 ) -> ApiResult<Json<Vec<Album>>> {
     administrator(&headers, &state).await?;
     Ok(Json(
-        sqlx::query_as("SELECT id,name FROM albums WHERE user_id=$1 ORDER BY name,id")
+        sqlx::query_as("SELECT id,name,description FROM albums WHERE user_id=$1 ORDER BY name,id")
             .bind(id)
             .fetch_all(&state.pool)
             .await

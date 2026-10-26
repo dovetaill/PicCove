@@ -6,19 +6,135 @@ import { Input } from '@/components/ui/input';
 import { api, useMe } from './api';
 import { passkey } from './passkey';
 
-export function AccountSecurity() {
+type SecurityInfo = {
+  totp_enabled: boolean;
+  passkeys: { id: string; name: string }[];
+};
+
+export type PendingTotp = { secret: string; uri: string } | null;
+
+function useSecurityInfo() {
+  return useQuery({
+    queryKey: ['security'],
+    queryFn: () => api<SecurityInfo>('/me/security'),
+  });
+}
+
+function SecurityStatus({
+  query,
+}: {
+  query: ReturnType<typeof useSecurityInfo>;
+}) {
+  if (query.isPending) return <p role="status">正在读取安全设置…</p>;
+  if (query.isError)
+    return (
+      <p role="alert">
+        安全设置加载失败。
+        <Button onClick={() => void query.refetch()}>重试</Button>
+      </p>
+    );
+  return null;
+}
+
+export function AccountProfile() {
   const me = useMe();
   const client = useQueryClient();
-  const security = useQuery({
-    queryKey: ['security'],
-    queryFn: () =>
-      api<{ totp_enabled: boolean; passkeys: { id: string; name: string }[] }>(
-        '/me/security',
-      ),
-  });
+  const security = useSecurityInfo();
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    const form = event.currentTarget;
+    if (!form.reportValidity()) return;
+    const values = new FormData(form);
+    setBusy(true);
+    try {
+      await api('/me/username', 'POST', {
+        current_password: values.get('current_password'),
+        code: values.get('code') || '',
+        username: values.get('username'),
+      });
+      toast.success('用户名已更新');
+      for (const name of ['current_password', 'code']) {
+        const input = form.elements.namedItem(name) as HTMLInputElement | null;
+        if (input) input.value = '';
+      }
+      await client.invalidateQueries();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '操作失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (security.isPending || security.isError)
+    return <SecurityStatus query={security} />;
+  return (
+    <form className="cove-security" noValidate onSubmit={submit}>
+      <section className="cove-account-section">
+        <h2>用户名</h2>
+        <div className="cove-form">
+          <label>
+            登录用户名
+            <Input
+              name="username"
+              required
+              defaultValue={me.data?.user.username}
+              minLength={3}
+              maxLength={32}
+              pattern="[A-Za-z0-9_-]+"
+              autoComplete="username"
+            />
+          </label>
+          <p className="cove-muted">
+            使用 3–32 位字母、数字、下划线或短横线。修改后用新用户名登录，图片、相册和账号权限都不受影响。
+          </p>
+          <label>
+            当前密码
+            <Input
+              name="current_password"
+              type="password"
+              autoComplete="current-password"
+              required
+              maxLength={128}
+            />
+          </label>
+          {security.data.totp_enabled && (
+            <label>
+              六位动态验证码
+              <Input
+                name="code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                required
+              />
+            </label>
+          )}
+          <Button type="submit" disabled={busy}>
+            保存用户名
+          </Button>
+        </div>
+      </section>
+    </form>
+  );
+}
+
+export function AccountSecurity({
+  pending,
+  setPending,
+}: {
+  pending: PendingTotp;
+  setPending: (value: PendingTotp) => void;
+}) {
+  const client = useQueryClient();
+  const security = useSecurityInfo();
   const [busy, setBusy] = useState(false);
   const totpConfirm = useRef<HTMLButtonElement>(null);
   const addPasskey = useRef<HTMLButtonElement>(null);
+
   function handleEnter(event: KeyboardEvent<HTMLFormElement>) {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
       return;
@@ -29,15 +145,13 @@ export function AccountSecurity() {
       addPasskey.current?.click();
     } else if (event.target.name === 'code') {
       event.preventDefault();
-      if (pending && !security.data?.totp_enabled) totpConfirm.current?.click();
-    } else if (event.target.name !== 'username') {
+      if (pending && !security.data?.totp_enabled)
+        totpConfirm.current?.click();
+    } else {
       event.preventDefault();
     }
   }
-  const [pending, setPending] = useState<{
-    secret: string;
-    uri: string;
-  } | null>(null);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
@@ -49,7 +163,6 @@ export function AccountSecurity() {
     const fields = ['current_password'];
     if (security.data?.totp_enabled || action === 'totp-confirm')
       fields.push('code');
-    if (action === 'username') fields.push('username');
     if (action === 'passkey') fields.push('name');
     for (const name of fields) {
       const input = form.elements.namedItem(name) as HTMLInputElement | null;
@@ -62,12 +175,7 @@ export function AccountSecurity() {
     };
     setBusy(true);
     try {
-      if (action === 'username') {
-        await api('/me/username', 'POST', {
-          ...proof,
-          username: values.get('username'),
-        });
-      } else if (action === 'totp-start') {
+      if (action === 'totp-start') {
         setPending(await api('/me/totp/start', 'POST', proof));
       } else if (action === 'totp-confirm') {
         await api('/me/totp/confirm', 'POST', proof);
@@ -100,7 +208,7 @@ export function AccountSecurity() {
           : '账号安全设置已更新',
       );
       if (action !== 'totp-start') {
-        for (const name of fields.filter((name) => name !== 'username')) {
+        for (const name of fields) {
           const input = form.elements.namedItem(
             name,
           ) as HTMLInputElement | null;
@@ -114,14 +222,9 @@ export function AccountSecurity() {
       setBusy(false);
     }
   }
-  if (security.isPending) return <p role="status">正在读取安全设置…</p>;
-  if (security.isError)
-    return (
-      <p role="alert">
-        安全设置加载失败。
-        <Button onClick={() => void security.refetch()}>重试</Button>
-      </p>
-    );
+
+  if (security.isPending || security.isError)
+    return <SecurityStatus query={security} />;
   return (
     <form
       className="cove-security"
@@ -133,7 +236,7 @@ export function AccountSecurity() {
         <h2>身份确认</h2>
         <div className="cove-form">
           <p className="cove-muted">
-            修改用户名或验证方式前，请在这里输入当前密码；开启二步验证后还需验证码。更新成功后，其他设备需要重新登录。修改密码请使用下方对应表单。
+            修改验证方式前，请输入当前密码；开启二步验证后还需验证码。修改密码请使用下方表单。
           </p>
           <label>
             当前密码
@@ -158,30 +261,6 @@ export function AccountSecurity() {
               />
             </label>
           )}
-        </div>
-      </section>
-      <section className="cove-account-section">
-        <h2>用户名</h2>
-        <div className="cove-form">
-          <label>
-            登录用户名
-            <Input
-              name="username"
-              required
-              defaultValue={me.data?.user.username}
-              minLength={3}
-              maxLength={32}
-              pattern="[A-Za-z0-9_-]+"
-              autoComplete="username"
-            />
-          </label>
-          <p className="cove-muted">
-            使用 3–32
-            位字母、数字、下划线或短横线。修改后用新用户名登录，图片、相册和账号权限都不受影响。
-          </p>
-          <Button type="submit" name="action" value="username" disabled={busy}>
-            保存用户名
-          </Button>
         </div>
       </section>
       <section className="cove-account-section">
