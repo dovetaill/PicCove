@@ -38,6 +38,19 @@ bash piccove.sh logs
 
 备份、升级和发版说明见 [运维文档](OPERATIONS.md)。不要运行 `docker compose down -v`，该命令会删除数据库和原图。
 
+## 本机 AI 上游
+
+`in.mb.al` 的 DNS 返回 `127.0.0.1`，在 API 容器中会误连容器自身，导致拉取模型连接失败。本站在 `/opt/piccove/compose.override.yml` 中将此域名映射到宿主机网关，继续使用原地址 `http://in.mb.al:8080/v1`：
+
+```yaml
+services:
+  api:
+    extra_hosts:
+      - "in.mb.al:host-gateway"
+```
+
+此配置只适用于本站位于宿主机 8080 端口的上游，不加入通用发行配置。Compose 自动合并覆盖文件，升级时保留该文件。配置中不存放 API 密钥。
+
 ## Nginx 与证书
 
 - 站点配置：`/etc/nginx/conf.d/piccove-tu.jpggg.com.conf`，`root:root 0644`。
