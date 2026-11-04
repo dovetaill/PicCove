@@ -217,7 +217,7 @@ try {
     await screenshot({ path: `${dir}/reviews-${width}.png`, fullPage: true });
   }
   await page.goto('http://piccove.test/app/ai');
-  await page.getByRole('heading', { name: '从一个画面开始' }).waitFor();
+  await page.getByRole('heading', { name: '今天想创作什么？' }).waitFor();
   assert.equal(await page.getByRole('button', { name: '上页', exact: true }).count(), 0);
   await page.getByLabel('描述图片或修改要求').fill('测试图片');
   await page.getByRole('button', { name: '生成图片', exact: true }).click();

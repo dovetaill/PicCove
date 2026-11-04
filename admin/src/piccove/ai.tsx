@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { ArrowUp, ImagePlus, LoaderCircle, PanelLeft, SquarePen, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -593,6 +594,8 @@ function ChatImage({
 }
 export function AiChat() {
   const messageArea = useRef<HTMLDivElement>(null);
+  const referenceInput = useRef<HTMLInputElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
@@ -635,8 +638,16 @@ export function AiChat() {
     ['queued', 'running'].includes(m.status),
   );
   const banned = !!me.data?.user.content_ban;
+  const empty = !selected || messages.data?.length === 0;
+  const canSend =
+    !action.busy &&
+    !banned &&
+    !active &&
+    !!status.data?.enabled &&
+    !!prompt.trim();
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canSend) return;
     const ok = await action.save(async () => {
       let id = selected;
       if (!id) {
@@ -655,19 +666,26 @@ export function AiChat() {
   }
   return (
     <section className="cove-ai-page">
-      <div className="cove-heading">
+      <div className="cove-chat-heading">
+        <Button
+          className="cove-chat-history-toggle"
+          variant="ghost"
+          aria-label="历史对话"
+          aria-expanded={historyOpen}
+          aria-controls="chat-history"
+          onClick={() => setHistoryOpen(!historyOpen)}
+        >
+          <PanelLeft />
+        </Button>
         <h1>AI 图片对话</h1>
-        <p>
-          描述你想要的图片，也可以上传参考图后连续修改。图片保存在图库中，默认私有。
-        </p>
+        {status.data && (
+          <span className="cove-chat-quota">
+            {status.data.unlimited
+              ? '无限额度'
+              : `今日已用／预占 ${status.data.used} / ${status.data.daily_limit} 张（UTC）`}
+          </span>
+        )}
       </div>
-      {status.data && (
-        <p>
-          {status.data.unlimited
-            ? '管理员不限生图额度'
-            : `今日已用／预占 ${status.data.used} / ${status.data.daily_limit} 张（UTC）`}
-        </p>
-      )}
       {status.isError && (
         <p role="alert">
           {errorText(status.error)}{' '}
@@ -693,17 +711,25 @@ export function AiChat() {
         </p>
       )}
       <div className="cove-chat-layout">
-        <aside className="cove-chat-history" aria-label="历史对话">
+        <aside
+          id="chat-history"
+          className={`cove-chat-history${historyOpen ? ' is-open' : ''}`}
+          aria-label="历史对话"
+        >
           <Button
+            variant="ghost"
             disabled={action.busy || banned}
             onClick={() => {
               setSelected(null);
               setPrompt('');
               setReference(null);
+              setHistoryOpen(false);
             }}
           >
+            <SquarePen />
             新对话
           </Button>
+          <span className="cove-chat-history-label">最近对话</span>
           {list.data && !list.data.items.length && (
             <p className="cove-muted">暂无历史对话</p>
           )}
@@ -712,15 +738,18 @@ export function AiChat() {
             <Button
               key={c.id}
               disabled={action.busy}
-              className="w-full justify-start truncate"
-              variant={selected === c.id ? 'primary' : 'outline'}
+              className="cove-chat-history-item"
+              variant="ghost"
+              aria-current={selected === c.id ? 'page' : undefined}
+              title={c.title}
               onClick={() => {
                 setSelected(c.id);
                 setReference(null);
                 setPrompt('');
+                setHistoryOpen(false);
               }}
             >
-              {c.title}
+              <span>{c.title}</span>
             </Button>
           ))}
           {(page > 1 || !!list.data?.has_more) && (
@@ -742,49 +771,38 @@ export function AiChat() {
             </div>
           )}
         </aside>
-        <div className="cove-chat-main">
+        <div className={`cove-chat-main${empty ? ' is-empty' : ''}`}>
           <div
             ref={messageArea}
             className="cove-chat-messages"
             aria-label="对话消息"
             aria-live="polite"
           >
-            {!selected && (
-              <div className="cove-empty">
-                <h2>从一个画面开始</h2>
-                <p>
-                  描述主题、风格和构图，或添加参考图片。生成后可继续描述修改要求。
-                </p>
+            {empty && (
+              <div className="cove-chat-welcome">
+                <h2>今天想创作什么？</h2>
+                <p>让脑海中的画面，成为眼前的图片。</p>
               </div>
             )}
             {selected && messages.isPending && (
               <p role="status">正在加载对话…</p>
             )}
-            {selected && messages.data?.length === 0 && (
-              <p className="cove-empty">这段对话还没有消息。</p>
-            )}
             {messages.isError && (
               <p role="alert">{errorText(messages.error)}</p>
             )}
             {messages.data?.map((m) => (
-              <Card key={m.id}>
-                <CardContent className="space-y-3">
-                  <p className="whitespace-pre-wrap break-words">
-                    <strong>你：</strong>
-                    {m.prompt}
-                  </p>
+              <article key={m.id} className="cove-chat-turn">
+                <div className="cove-chat-user" aria-label="你的消息">
+                  <p>{m.prompt}</p>
                   {m.reference_id && (
                     <ChatImage
                       id={m.reference_id}
                       status={m.reference_status}
                     />
                   )}
-                  {m.text && (
-                    <p className="whitespace-pre-wrap break-words">
-                      <strong>AI：</strong>
-                      {m.text}
-                    </p>
-                  )}
+                </div>
+                <div className="cove-chat-answer" aria-label="AI 回复">
+                  {m.text && <p>{m.text}</p>}
                   {m.image_id && (
                     <ChatImage
                       id={m.image_id}
@@ -793,7 +811,8 @@ export function AiChat() {
                     />
                   )}
                   {['queued', 'running'].includes(m.status) && (
-                    <p role="status">
+                    <p role="status" className="cove-chat-progress">
+                      <LoaderCircle className="animate-spin" />
                       {m.status === 'queued' ? '等待生成…' : '正在生成…'}
                     </p>
                   )}
@@ -819,78 +838,106 @@ export function AiChat() {
                       </Button>
                     </div>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </article>
             ))}
           </div>
           <form
-            className="cove-form cove-chat-composer"
+            className="cove-chat-composer"
             onSubmit={(event) => void submit(event)}
           >
-            <label>
-              参考图片
-              <Input
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
-                disabled={action.busy || banned || !!active}
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  event.target.value = '';
-                  if (!file) return;
-                  const form = new FormData();
-                  form.append('file', file);
-                  void action.save(async () => {
-                    const image = await api<Picture>(
-                      '/images?private=true',
-                      'POST',
-                      form,
-                    );
-                    setReference(image);
-                    await client.invalidateQueries({ queryKey: ['images'] });
-                  });
-                }}
-              />
-            </label>
+            <input
+              ref={referenceInput}
+              hidden
+              aria-label="参考图片"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              disabled={action.busy || banned || !!active}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (!file) return;
+                const form = new FormData();
+                form.append('file', file);
+                void action.save(async () => {
+                  const image = await api<Picture>(
+                    '/images?private=true',
+                    'POST',
+                    form,
+                  );
+                  setReference(image);
+                  await client.invalidateQueries({ queryKey: ['images'] });
+                });
+              }}
+            />
             {reference && (
-              <p>
-                参考图：{reference.original_name}（审核通过后可用于生成）{' '}
+              <div className="cove-chat-reference">
+                <ImagePlus />
+                <span>
+                  {reference.original_name}
+                  <small>参考图片 · 审核通过后用于生成</small>
+                </span>
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="ghost"
+                  aria-label="移除参考图片"
                   disabled={action.busy}
                   onClick={() => setReference(null)}
                 >
-                  移除
+                  <X />
                 </Button>
-              </p>
+              </div>
             )}
-            <label>
-              描述图片或修改要求
-              <Textarea
-                disabled={action.busy}
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                required
-                maxLength={4000}
-                rows={4}
-                placeholder="生成一张图片，或描述要怎样修改上一张图片…"
-              />
-            </label>
-            <div className="cove-actions">
-              <Button
-                type="submit"
-                disabled={
-                  action.busy ||
-                  banned ||
-                  !!active ||
-                  !status.data?.enabled ||
-                  !prompt.trim()
+            <Textarea
+              aria-label="描述图片或修改要求"
+              disabled={action.busy}
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              required
+              maxLength={4000}
+              rows={2}
+              placeholder="描述你想要的图片，或继续修改…"
+              onKeyDown={(event) => {
+                if (
+                  event.key === 'Enter' &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing &&
+                  event.nativeEvent.keyCode !== 229
+                ) {
+                  event.preventDefault();
+                  if (canSend) event.currentTarget.form?.requestSubmit();
                 }
+              }}
+            />
+            <div className="cove-chat-tools">
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={action.busy || banned || !!active}
+                onClick={() => referenceInput.current?.click()}
+                aria-label="添加参考图片"
               >
-                {active ? '正在生成…' : '生成图片'}
+                <ImagePlus />
+                添加图片
+              </Button>
+              <Button
+                className="cove-chat-send"
+                type="submit"
+                aria-label={active ? '正在生成…' : '生成图片'}
+                title="生成图片"
+                disabled={!canSend}
+              >
+                {active ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <ArrowUp />
+                )}
               </Button>
             </div>
           </form>
+          <p className="cove-chat-footnote">
+            图片自动保存到图库，默认私有 · Enter 发送，Shift + Enter 换行
+          </p>
         </div>
       </div>
     </section>

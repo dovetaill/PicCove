@@ -72,6 +72,69 @@ import { ShareQr } from './share-qr';
 import { SystemSettings } from './system';
 import { UploadProvider, useUploads } from './upload-manager';
 
+const linkFormats = [
+  ['url', '图片地址（直链）'],
+  ['markdown', 'Markdown 外链'],
+  ['html', 'HTML 外链'],
+  ['bbcode', 'BBCode 外链'],
+  ['markdown-thumbnail', 'Markdown 缩略图链接'],
+  ['html-thumbnail', 'HTML 缩略图链接'],
+];
+
+function BatchLinks({
+  pictures,
+  onCopy,
+}: {
+  pictures: Picture[];
+  onCopy: (text: string) => Promise<void>;
+}) {
+  const [format, setFormat] = useState('url');
+  const shareable = pictures.filter(
+    (item) => item.is_public && !item.deleted_at,
+  );
+  const text = shareable.map((item) => imageLink(item, format)).join('\n');
+  return (
+    <div className="cove-batch-links">
+      <div className="cove-batch-links-toolbar">
+        <Select value={format} onValueChange={setFormat}>
+          <SelectTrigger aria-label="批量链接格式">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {linkFormats.map(([value, label]) => (
+              <SelectItem key={value} value={value}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span>{shareable.length} 个链接 · 每行一张</span>
+        <Button
+          variant="outline"
+          disabled={!shareable.length}
+          onClick={() => void onCopy(text)}
+        >
+          <Copy />
+          复制全部链接
+        </Button>
+      </div>
+      {shareable.length !== pictures.length && (
+        <p className="cove-muted">
+          已跳过 {pictures.length - shareable.length}{' '}
+          张私有或待清理图片，公开状态保持不变。
+        </p>
+      )}
+      <Textarea
+        aria-label="批量图片链接"
+        readOnly
+        rows={Math.min(6, Math.max(2, shareable.length))}
+        value={text}
+        onFocus={(event) => event.currentTarget.select()}
+      />
+    </div>
+  );
+}
+
 function message(error: unknown) {
   return error instanceof Error ? error.message : '操作失败';
 }
@@ -98,6 +161,10 @@ function useAction() {
 export function Workspace() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const location = useLocation();
+  useEffect(() => {
+    if (location.pathname === '/app/ai') setCollapsed(true);
+  }, [location.pathname]);
   const me = useMe();
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -351,6 +418,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
       !albums.data.some((item) => item.id === album));
   const items = images.data?.items || [];
   const chosen = items.filter((item) => selected.includes(item.id));
+  const uploaded = queue.flatMap((item) => item.image ? [item.image] : []);
   const activeUpload = queue.find((item) =>
     ['上传中', '服务器处理中'].includes(item.status),
   );
@@ -546,6 +614,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
               </Button>
             )}
           </div>
+          {!!uploaded.length && <BatchLinks pictures={uploaded} onCopy={copy} />}
           {activeUpload && (
             <div className="cove-upload-current" role="status">
               <p>
@@ -747,7 +816,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
           disabled={!chosen.length}
           onClick={() => showLinks(chosen)}
         >
-          嵌入格式
+          查看 / 复制外链
         </Button>
         <Button
           variant="outline"
@@ -793,6 +862,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
           </>
         )}
       </div>
+      {!!chosen.length && <BatchLinks pictures={chosen} onCopy={copy} />}
       {invalidAlbum ? null : images.isPending ? (
         <p role="status">正在读取图库…</p>
       ) : images.isError ? (
@@ -936,14 +1006,7 @@ export function Gallery({ all = false }: { all?: boolean }) {
             </DialogDescription>
           </DialogHeader>
           <div className="cove-copy-formats">
-            {[
-              ['url', '直链'],
-              ['markdown', 'Markdown'],
-              ['html', 'HTML'],
-              ['bbcode', 'BBCode'],
-              ['markdown-thumbnail', 'Markdown 缩略图链接'],
-              ['html-thumbnail', 'HTML 缩略图链接'],
-            ].map(([format, label]) => {
+            {linkFormats.map(([format, label]) => {
               const text = copying
                 .map((item) => imageLink(item, format))
                 .join('\n');
