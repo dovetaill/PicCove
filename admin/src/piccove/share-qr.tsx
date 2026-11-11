@@ -8,7 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import type { Picture } from './api';
+import { sharingProblem, type Picture } from './api';
 
 export function ShareQr({
   image,
@@ -18,7 +18,7 @@ export function ShareQr({
   onClose: () => void;
 }) {
   const svg = useRef<SVGSVGElement>(null);
-  const allowed = !!image?.is_public && !image.deleted_at;
+  const allowed = !!image && !sharingProblem(image);
   // Leave room for medium error correction and keep unusually long links out of the encoder.
   const fits = !!image && new TextEncoder().encode(image.url).length <= 1500;
   function download() {
@@ -44,7 +44,7 @@ export function ShareQr({
           </DialogDescription>
         </DialogHeader>
         {!allowed ? (
-          <p role="alert">仅可分享未删除的公开图片。</p>
+          <p role="alert">{image && sharingProblem(image)}</p>
         ) : !fits ? (
           <p role="alert">
             图片链接太长，无法生成二维码。请返回图库复制链接分享。

@@ -23,7 +23,7 @@ try {
   let manager = null;
   let failModels = false;
   let aiConfig = { generation_mode: 'images', generation: { base_url: 'https://provider.test/v1', key: '', model: '' }, image_model: '', moderation: { base_url: '', key: '', model: '' }, moderation_enabled: false, before_publish: false, daily_limit: 20, concurrent_limit: 1, ban_threshold: 5, generation_key_set: true };
-  let albums = [{ id: 'a', name: '旅行', description: '旅途中的照片' }];
+  let albums = [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: '旅行', description: '旅途中的照片' }];
   let reviews = [];
   let conversations = [];
   let messages = [];
@@ -44,10 +44,11 @@ try {
       }
       if (api === '/admin/ai/models') return failModels ? route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: '上游不支持模型列表' }) }) : json(['image-test', 'chat-test']);
       if (api === '/albums') {
-        if (method === 'POST') albums.push({ id: 'new', ...route.request().postDataJSON() });
+        if (method === 'POST') { const album = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', ...route.request().postDataJSON() }; albums.push(album); return json(album); }
         return json(albums);
       }
-      if (api === '/albums/a' && method === 'PATCH') { albums[0] = { ...albums[0], ...route.request().postDataJSON() }; return json({}); }
+      if (api === '/albums/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' && method === 'PATCH') { albums[0] = { ...albums[0], ...route.request().postDataJSON() }; return json({}); }
+      if (api === '/images') return json({ items: [], has_more: false });
       if (api === '/admin/reviews') return json({ items: reviews, has_more: false });
       if (api === '/ai/status') return json({ enabled: true, unlimited: true, used: 0, daily_limit: 20 });
       if (api === '/ai/conversations') {
@@ -195,8 +196,11 @@ try {
   await page.getByRole('button', { name: '创建相册', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('名称', { exact: true }).fill('新相册');
-  await dialog.getByLabel('描述', { exact: true }).fill('示例描述');
+  await dialog.getByLabel('描述（选填）', { exact: true }).fill('示例描述');
   await dialog.getByRole('button', { name: '创建相册', exact: true }).click();
+  await page.getByRole('heading', { name: '新相册', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('album'), 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  await page.getByRole('link', { name: '返回相册' }).click();
   await page.getByRole('link', { name: '新相册', exact: true }).waitFor();
   await page.getByRole('button', { name: '编辑相册 旅行', exact: true }).click();
   await dialog.getByLabel('名称', { exact: true }).fill('旅行照片');

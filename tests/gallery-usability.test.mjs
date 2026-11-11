@@ -38,7 +38,7 @@ const server = createServer(async (req, res) => {
   res.end(
     file
       ? await readFile(`${dir}/${file}`)
-      : '<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/base.css"><link rel="stylesheet" href="/style.css"><div id="root"></div><script src="/app.js"></script>',
+      : '<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/base.css"><link rel="stylesheet" href="/style.css"><div id="root"></div><script type="module" src="/app.js"></script>',
   );
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -139,6 +139,8 @@ try {
       return json([{ id: albumId, name: "目标相册" }]);
     }
     if (path === "/images" && method === "GET") {
+      if (u.searchParams.has('content_hash')) return json({ items: [], has_more: false });
+      if (u.searchParams.has('ids')) return json({ items: (paged ? [pic('first'), ...(lastPageImage ? [pic('last')] : [])] : images).filter((item) => u.searchParams.get('ids').split(',').includes(item.id)), has_more: false });
       imageQueryAlbums.push(u.searchParams.get("album_id"));
       return json(
         paged
@@ -156,12 +158,13 @@ try {
     }
     if (path === "/images" && method === "POST") {
       uploadUrls.push(u.searchParams.get("album_id"));
-      holds.push(() =>
-        json(
+      holds.push(() => {
+        if (uploadStatus === 200 && !images.some((item) => item.id === resultImage.id)) images.push(resultImage);
+        return json(
           uploadStatus === 200 ? resultImage : { error: "模拟上传失败" },
           uploadStatus,
-        ),
-      );
+        );
+      });
       return;
     }
     if (path === "/images/a" && method === "PATCH") return json({});
@@ -217,21 +220,21 @@ try {
   );
   console.log("PASS mobile action hit targets and deleted-image copy disabled");
   await page.getByRole("checkbox", { name: "选择本页" }).check();
-  await page
-    .locator(".cove-batch")
-    .getByRole("button", { name: "复制直链" })
-    .click();
-  await page.waitForFunction(() =>
-    window.__toasts?.some((s) => s.includes("待清理")),
-  );
-  assert.equal(await page.getByRole("dialog").count(), 0);
+  await page.locator('.cove-batch').getByRole('button', { name: '复制链接', exact: true }).click();
+  await page.getByRole('dialog').getByText('已跳过 1 张不可分享图片（私有、待清理或审核限制），公开状态保持不变。').waitFor();
+  assert(!await page.getByRole('dialog').getByRole('textbox').inputValue().then((value) => value.includes('/i/dead')));
+  await page.keyboard.press('Escape');
   await page
     .getByRole("checkbox", { name: "选择 dead.png", exact: true })
     .uncheck();
-  await page.getByRole("button", { name: "移动", exact: true }).click();
+  await page.getByRole('button', { name: '移动到相册', exact: true }).click();
+  await page.getByRole('dialog').getByRole('combobox').click();
+  await page.getByRole('option', { name: '目标相册', exact: true }).click();
+  await page.getByRole('button', { name: '确认移动', exact: true }).click();
   await page.waitForFunction(() =>
     window.__toasts?.some((s) => s.includes("已移动 1 张，剩余 1 张")),
   );
+  await page.keyboard.press('Escape');
   assert.equal(
     await page
       .getByRole("checkbox", { name: "选择 a.png", exact: true })
@@ -264,7 +267,7 @@ try {
   await page.locator("form.cove-security").waitFor();
   await page
     .getByRole("status")
-    .filter({ hasText: "图片上传中，请勿刷新" })
+    .filter({ hasText: "正在上传，请保持页面打开" })
     .click();
   await page.getByRole("heading", { name: "我的图片库" }).waitFor();
   assert.equal(
@@ -272,11 +275,11 @@ try {
     2,
   );
   assert.equal(
-    await page.locator(".cove-drop button").first().isDisabled(),
-    true,
+    await page.locator(".cove-drop button").filter({ hasText: "继续添加图片" }).isDisabled(),
+    false,
   );
   console.log(
-    "PASS in-app navigation preserves in-flight queue and blocks another batch",
+    "PASS in-app navigation preserves in-flight queue and allows another batch",
   );
   assert.equal(
     await page.locator(".cove-upload-details").evaluate((e) => e.open),
@@ -295,29 +298,23 @@ try {
       return d;
     }),
   });
-  await page.waitForFunction(() =>
-    window.__toasts?.includes("正在处理，请稍等片刻再添加图片"),
-  );
+  assert.equal(await page.getByRole('region', { name: '上传队列' }).locator('li').count(), 3);
+  await page.locator('.cove-upload-details summary').click();
+  await page.getByRole('button', { name: '移除待上传 extra.png', exact: true }).click();
+  assert.equal(await page.getByRole('region', { name: '上传队列' }).locator('li').count(), 2);
   for (let n = 0; !holds.length && n < 500; n++)
     await new Promise((r) => setTimeout(r, 10));
   assert(holds.length, "upload request must arrive");
   await holds.shift()();
   const queue = page.getByRole("region", { name: "上传队列" });
-  await queue
-    .locator(".cove-upload-card", { hasText: "a.png" })
-    .getByRole("button", { name: "复制直链" })
-    .click();
-  await page.waitForFunction(() => window.__toasts?.includes("链接已复制"));
-  await queue
-    .locator(".cove-upload-card", { hasText: "a.png" })
-    .getByRole("button", { name: "嵌入格式" })
-    .click();
-  await page.getByRole("dialog").waitFor();
-  assert.equal(await page.getByRole("dialog").locator("textarea").count(), 6);
-  await page.keyboard.press("Escape");
-  console.log(
-    "PASS busy drop feedback and per-file duplicate links before batch completes",
-  );
+  await queue.getByRole('button', { name: '复制上传结果 duplicate.png', exact: true }).click();
+  await page.waitForFunction(() => window.__toasts?.includes('链接已复制'));
+  await queue.getByRole('button', { name: '复制本次链接', exact: true }).click();
+  await page.getByRole('dialog').waitFor();
+  await page.getByRole('dialog').locator('textarea').waitFor();
+  assert.equal(await page.getByRole('dialog').locator('textarea').count(), 1);
+  await page.keyboard.press('Escape');
+  console.log('PASS append/remove waiting item and duplicate links before batch completes');
   resultImage = pic("a");
   for (let n = 0; !holds.length && n < 500; n++)
     await new Promise((r) => setTimeout(r, 10));
@@ -325,12 +322,13 @@ try {
   await holds.shift()();
   await page.waitForFunction(() => window.__toasts?.includes("图片上传完成"));
   deleteFail = true;
-  await page.getByRole("button", { name: "删除 a.png", exact: true }).click();
+  await page.getByRole('button', { name: '更多操作 a.png', exact: true }).click();
+  await page.getByRole('menuitem', { name: '永久删除', exact: true }).click();
   await page.getByRole("button", { name: "确认永久删除" }).click();
   await page.waitForFunction(() =>
     window.__toasts?.includes("模拟文件清理失败"),
   );
-  assert.equal(await queue.locator(".cove-upload-card").count(), 0);
+  assert.equal(await queue.locator("li").count(), 0);
   await page.keyboard.press("Escape");
   console.log("PASS failed delete removes all duplicate upload result links");
   resultImage = pic("private", { is_public: false });
@@ -343,28 +341,24 @@ try {
     await new Promise((r) => setTimeout(r, 10));
   assert(holds.length, "upload request must arrive");
   await holds.shift()();
-  await queue
-    .locator(".cove-upload-card", { hasText: "private.png" })
-    .waitFor();
-  assert.equal(
-    await queue
-      .locator(".cove-upload-card", { hasText: "private.png" })
-      .getByRole("button", { name: "复制直链" })
-      .isDisabled(),
-    true,
-  );
+  await queue.locator('summary').click();
+  await queue.getByRole('button', { name: '复制上传结果 private.png', exact: true }).click();
+  const privateLinks = page.getByRole('dialog');
+  assert.equal(await privateLinks.getByRole('textbox').inputValue(), '');
+  assert(await privateLinks.getByRole('button', { name: '复制全部链接' }).isDisabled());
+  await privateLinks.getByText(/这是私有图片/).waitFor();
+  await page.keyboard.press('Escape');
   deleteFail = false;
-  await page
-    .getByRole("button", { name: "删除 private.png", exact: true })
-    .click();
+  await page.getByRole('button', { name: '更多操作 private.png', exact: true }).click();
+  await page.getByRole('menuitem', { name: '永久删除', exact: true }).click();
   await page.getByRole("button", { name: "确认永久删除" }).click();
   await page.waitForFunction(() => window.__toasts?.includes("图片已删除"));
-  assert.equal(await queue.locator(".cove-upload-card").count(), 0);
+  assert.equal(await queue.locator("li").count(), 0);
   console.log(
     "PASS private upload view/copy restriction and successful delete queue cleanup",
   );
   // Failed uploads retain the album selected for their original submission.
-  await page.getByRole("combobox", { name: "筛选相册" }).click();
+  await page.getByRole("combobox", { name: "上传到相册" }).click();
   await page.getByRole("option", { name: "目标相册", exact: true }).click();
   uploadStatus = 500;
   await page
@@ -377,8 +371,8 @@ try {
   await holds.shift()();
   await queue.getByRole("button", { name: "重试未完成项" }).waitFor();
   assert.equal(await queue.getByRole("alert").isVisible(), true);
-  await page.getByRole("combobox", { name: "筛选相册" }).click();
-  await page.getByRole("option", { name: "全部相册", exact: true }).click();
+  await page.getByRole("combobox", { name: "上传到相册" }).click();
+  await page.getByRole("option", { name: "不放入相册", exact: true }).click();
   uploadStatus = 200;
   resultImage = pic("retry");
   await queue.getByRole("button", { name: "重试未完成项" }).click();
@@ -387,8 +381,9 @@ try {
   assert(holds.length);
   assert.equal(uploadUrls.at(-1), albumId);
   await holds.shift()();
+  await queue.locator('summary').click();
   await queue
-    .locator(".cove-upload-card", { hasText: "retry.png" })
+    .getByRole("button", { name: "复制上传结果 retry.png", exact: true })
     .waitFor();
   console.log(
     "PASS failed upload retry retains original album after filter changes",
@@ -434,7 +429,7 @@ try {
   resultImage = pic("waiting");
   await holds.shift()();
   await queue
-    .locator(".cove-upload-card", { hasText: "waiting.png" })
+    .getByRole("button", { name: "复制上传结果 waiting.png", exact: true })
     .waitFor();
   assert.equal(uploadUrls.length, uploadsBefore + 2);
   console.log(
@@ -442,7 +437,8 @@ try {
   );
   // A short landscape viewport must keep the complete QR dialog usable.
   await page.setViewportSize({ width: 844, height: 390 });
-  await page.getByRole("button", { name: "分享 b.png 二维码" }).click();
+  await page.getByRole('button', { name: '更多操作 b.png', exact: true }).click();
+  await page.getByRole('menuitem', { name: '二维码分享', exact: true }).click();
   const qr = page.getByRole("dialog");
   await qr.waitFor();
   const qrBox = await qr.boundingBox();
@@ -470,9 +466,8 @@ try {
   paged = true;
   await page.reload();
   await page.getByRole("button", { name: "下一页" }).click();
-  await page
-    .getByRole("button", { name: "删除 last.png", exact: true })
-    .click();
+  await page.getByRole('button', { name: '更多操作 last.png', exact: true }).click();
+  await page.getByRole('menuitem', { name: '永久删除', exact: true }).click();
   await page.getByRole("button", { name: "确认永久删除" }).click();
   await page.getByRole("button", { name: "复制 first.png 链接" }).waitFor();
   await page.getByText("第 1 页", { exact: true }).waitFor();
@@ -480,6 +475,10 @@ try {
     "PASS empty final page after deletion automatically returns to previous page",
   );
   holdAlbums = true;
+  if (await queue.count()) {
+    await queue.getByRole('button', { name: '清除上传记录' }).click();
+    await queue.waitFor({ state: 'hidden' });
+  }
   const albumRequest = page.waitForRequest((request) => request.url().endsWith("/api/v1/albums"));
   await page.goto(`http://127.0.0.1:${port}/app?album=00000000-0000-0000-0000-000000000001`);
   await albumRequest;
@@ -502,13 +501,14 @@ try {
   assert.equal(await page.getByRole("region", { name: "上传队列" }).count(), 0);
   assert.equal(await unexpectedUpload, false);
   assert.equal(uploadUrls.length, uploadsBeforeMissingAlbum);
-  await page.getByRole("combobox", { name: "筛选相册" }).click();
-  await page.getByRole("option", { name: "全部相册", exact: true }).click();
-  assert.equal(new URL(page.url()).searchParams.has("album"), false);
-  assert.equal(await page.getByRole("alert").filter({ hasText: "该相册已不存在或无权访问" }).count(), 0);
+  await page.getByRole("combobox", { name: "上传到相册" }).click();
+  await page.getByRole("option", { name: "不放入相册", exact: true }).click();
+  assert.equal(new URL(page.url()).searchParams.get("album"), '00000000-0000-0000-0000-000000000001');
+  assert.equal(await page.getByRole("alert").filter({ hasText: "该相册已不存在或无权访问" }).count(), 1);
+  assert(await page.getByRole('combobox', { name: '上传到相册' }).textContent().then((text) => text.includes('不放入相册')));
   console.log("PASS missing album blocks upload and allows selecting another destination");
   await page.goto(`http://127.0.0.1:${port}/app?album=${albumId.toUpperCase()}`);
-  await page.getByRole("combobox", { name: "筛选相册" }).filter({ hasText: "目标相册" }).waitFor();
+  await page.getByRole("combobox", { name: "上传到相册" }).filter({ hasText: "目标相册" }).waitFor();
   await page.getByRole("button", { name: "复制 first.png 链接" }).waitFor();
   assert.equal(imageQueryAlbums.at(-1), albumId);
   const queriesBeforeInvalidAlbum = imageQueryAlbums.length;

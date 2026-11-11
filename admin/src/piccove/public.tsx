@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type MouseEventHandler } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight,
@@ -16,9 +16,9 @@ import { Input } from '@/components/ui/input';
 import { api, useSettings } from './api';
 import { passkey } from './passkey';
 
-export function Brand() {
+export function Brand({ onClick }: { onClick?: MouseEventHandler<HTMLAnchorElement> }) {
   return (
-    <Link to="/" className="cove-brand">
+    <Link to="/" className="cove-brand" onClick={onClick}>
       <span>
         <Waves size={24} />
       </span>
@@ -189,8 +189,8 @@ export function Auth({ register = false }: { register?: boolean }) {
               ? '从第一张图片，开始整理你的灵感。'
               : '登录，继续你的创作。'}
           </p>
-          {settings.isError ? (
-            <p role="alert">无法读取注册状态，请刷新重试。</p>
+          {register && settings.isError ? (
+            <p role="alert">无法读取注册状态。<Button variant="outline" onClick={() => void settings.refetch()}>重试</Button></p>
           ) : register && !settings.data?.registration_open ? (
             <p>
               {settings.isPending

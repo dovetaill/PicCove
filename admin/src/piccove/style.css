@@ -396,6 +396,11 @@ input {
 }
 .cove-heading {
   margin-bottom: 28px;
+  overflow-wrap: anywhere;
+}
+.cove-album-dialog {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
 }
 .cove-heading h1 {
   font-size: 26px;
@@ -492,8 +497,8 @@ input {
 .cove-check input,
 .cove-image input {
   accent-color: #397856;
-  width: 15px;
-  height: 15px;
+  width: 22px;
+  height: 22px;
 }
 .cove-gallery {
   display: grid;
@@ -521,10 +526,17 @@ input {
   height: 100%;
   object-fit: cover;
 }
-.cove-image-preview input {
+.cove-image-select {
   position: absolute;
-  left: 12px;
-  top: 12px;
+  left: 4px;
+  top: 4px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.cove-image-select input {
   box-shadow: 0 1px 4px #0002;
 }
 .cove-image [data-slot='card-content'] {
@@ -536,6 +548,11 @@ input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.cove-image [data-slot='card-content'] > small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .cove-image p {
   display: flex;
@@ -556,15 +573,15 @@ input {
   margin-right: auto;
 }
 .cove-image-actions button {
-  height: auto;
-  min-height: 0;
-  padding: 6px 8px;
-  font-size: 11px;
+  min-width: 44px;
+  height: 44px;
+  padding: 8px 10px;
+  font-size: 13px;
   gap: 4px;
 }
 .cove-image-actions button svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 .cove-owner {
   font-size: 9px;
@@ -833,7 +850,7 @@ td small {
     padding: 5px;
   }
   .cove-image-actions button:first-child {
-    font-size: 11px;
+    font-size: 13px;
   }
   .cove-public-note {
     align-items: flex-start;
@@ -1528,15 +1545,13 @@ td small {
   font-size: 13px;
 }
 .cove-upload-summary,
-.cove-upload-file,
-.cove-copy-format > div {
+.cove-upload-file {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
-.cove-upload-summary h2,
-.cove-copy-format label {
+.cove-upload-summary h2 {
   font-weight: 600;
 }
 .cove-upload-summary p {
@@ -1563,48 +1578,6 @@ td small {
   padding: 14px 0 12px;
   border-top: 1px solid var(--border);
   margin-top: 12px;
-}
-.cove-upload-results {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 16px;
-  margin-top: 16px;
-}
-.cove-upload-card {
-  overflow: hidden;
-}
-.cove-upload-thumb {
-  display: block;
-  height: 140px;
-  background: var(--muted);
-}
-.cove-upload-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.cove-upload-card [data-slot='card-content'] {
-  padding: 12px;
-}
-.cove-upload-card h3 {
-  font-weight: 500;
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.cove-upload-card p {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--muted-foreground);
-  margin: 8px 0 4px;
-}
-.cove-upload-card small {
-  display: block;
-  min-height: 28px;
-  font-size: 10px;
-  line-height: 14px;
 }
 .cove-upload-list {
   list-style: none;
@@ -1641,6 +1614,7 @@ td small {
   overflow-wrap: anywhere;
 }
 .cove-copy-dialog {
+  overflow-y: auto;
   width: calc(100% - 32px);
   max-width: 680px;
   max-height: calc(100dvh - 40px);
@@ -1648,37 +1622,6 @@ td small {
 .cove-copy-dialog [data-slot='dialog-description'] {
   overflow-wrap: anywhere;
 }
-.cove-copy-formats {
-  min-height: 0;
-  overflow-y: auto;
-  display: grid;
-  gap: 20px;
-}
-.cove-copy-format {
-  display: grid;
-  gap: 8px;
-  font-size: 13px;
-}
-.cove-copy-format textarea {
-  min-height: 64px;
-  resize: vertical;
-  font-family: monospace;
-  overflow-wrap: anywhere;
-}
-
-.cove-upload-result {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-}
-.cove-upload-result a {
-  color: var(--primary);
-  overflow-wrap: anywhere;
-  text-decoration: underline;
-}
-
 .cove-batch-links {
   display: grid;
   gap: 10px;
@@ -1728,5 +1671,73 @@ td small {
 
 .cove-qr-dialog > svg,
 .cove-qr-dialog > button {
+  flex-shrink: 0;
+}
+
+.cove-upload-destination,
+.cove-album-navigation,
+.cove-album-navigation a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cove-upload-destination {
+  font-size: 13px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.cove-upload-destination [data-slot='select-trigger'] {
+  width: 200px;
+  max-width: 100%;
+}
+.cove-album-navigation {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin: -8px 0 18px;
+}
+.cove-album-cover {
+  display: grid;
+  place-items: center;
+  height: 150px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--muted);
+}
+.cove-album-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cove-album-cover > svg {
+  width: 40px;
+  height: 40px;
+}
+.cove-check {
+  min-height: 44px;
+  cursor: pointer;
+}
+.cove-upload-file {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cove-upload-file span:first-child {
+  flex: 1 1 120px;
+}
+.cove-upload-file button {
+  min-height: 44px;
+}
+.cove-reference-progress {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  padding: 8px;
+}
+.cove-reference-progress progress {
+  width: 100%;
+}
+.cove-chat-reference > img {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 6px;
   flex-shrink: 0;
 }

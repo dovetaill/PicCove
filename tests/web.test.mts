@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { decode, encode } from '../admin/src/piccove/passkey';
-import { api, imageLink, size, type Picture } from '../admin/src/piccove/api';
+import { api, imageLink, latestPictures, sharingProblem, size, type Picture } from '../admin/src/piccove/api';
 const picture = {
   url: 'https://img.example/i/id',
   thumbnail_url: 'https://img.example/api/v1/images/id/thumbnail',
@@ -25,6 +25,19 @@ assert.ok(imageLink(special, 'markdown-thumbnail').endsWith('(https://img.exampl
 assert.equal(imageLink({ ...picture, url: 'https://img.example/[x]' }, 'bbcode'), '[img]https://img.example/%5Bx%5D[/img]');
 assert.ok(imageLink({ ...picture, url: 'https://img.example/?x="&y=1' }, 'html-thumbnail').startsWith('<a href="https://img.example/?x=&quot;&amp;y=1">'));
 assert.equal(size(1073741824), '1.00 GiB');
+const publicPicture = { ...picture, is_public: true, deleted_at: null };
+for (const status of ['unreviewed', 'exempt', 'pending', 'running', 'passed', 'failed']) {
+  assert.equal(sharingProblem({ ...publicPicture, moderation_status: status, moderation_hold: false }), null);
+}
+for (const status of ['blocked', 'review']) {
+  assert.match(sharingProblem({ ...publicPicture, moderation_status: status })!, /审核限制/);
+}
+for (const status of ['pending', 'running', 'failed']) {
+  assert.match(sharingProblem({ ...publicPicture, moderation_status: status, moderation_hold: true })!, /尚未通过审核/);
+}
+assert.equal(sharingProblem({ ...publicPicture, moderation_status: 'passed', moderation_hold: true }), null);
+assert.match(sharingProblem({ ...publicPicture, is_public: false })!, /私有/);
+assert.match(sharingProblem({ ...publicPicture, deleted_at: '2026-11-05' })!, /已删除/);
 let options: RequestInit | undefined;
 globalThis.fetch = async (_url, init) => {
   options = init;
@@ -47,6 +60,19 @@ globalThis.fetch = async () =>
     headers: { 'Content-Type': 'application/json' },
   });
 assert.deepEqual(await api('/settings'), { registration_open: false });
+const pictures = Array.from({ length: 49 }, (_, index) => ({ ...publicPicture, id: String(index) }));
+const batches: string[][] = [];
+globalThis.fetch = async (url, init) => {
+  if (init?.signal?.aborted) throw init.signal.reason;
+  const ids = new URL(String(url), 'https://piccove.test').searchParams.get('ids')!.split(',');
+  batches.push(ids);
+  return new Response(JSON.stringify({ items: ids.filter((id) => id !== '48').reverse().map((id) => ({ ...publicPicture, id, moderation_status: 'passed' })), has_more: false }), { headers: { 'Content-Type': 'application/json' } });
+};
+const refreshed = await latestPictures(pictures);
+assert.deepEqual(batches.map((batch) => batch.length), [48, 1]);
+assert.deepEqual(refreshed.map((item) => item.id), pictures.map((item) => item.id));
+assert(refreshed[48].deleted_at);
+await assert.rejects(latestPictures([picture], false, AbortSignal.abort()), /abort/i);
 const credentialBytes = new Uint8Array([0, 127, 128, 255]);
 assert.deepEqual(decode(encode(credentialBytes.buffer)), credentialBytes);
-console.log('web helpers: 18 assertions passed');
+console.log('Web helper checks passed: link formats, sharing access matrix, API errors and credentials.');

@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { api, useMe, type Page, type Picture, type User } from './api';
+import { uploadImage } from './upload';
 
 export const reviewLabels: Record<string, string> = {
   unreviewed: '未审核',
@@ -599,6 +600,7 @@ export function AiChat() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
+  const [referenceUpload, setReferenceUpload] = useState<{ name: string; progress: number } | null>(null);
   const [reference, setReference] = useState<Pick<
     Picture,
     'id' | 'original_name'
@@ -857,22 +859,34 @@ export function AiChat() {
                 const file = event.target.files?.[0];
                 event.target.value = '';
                 if (!file) return;
+                if (!file.size || file.size > 10 * 1024 * 1024) {
+                  toast.error('图片不能为空，单张大小不能超过 10 MiB');
+                  return;
+                }
                 const form = new FormData();
                 form.append('file', file);
                 void action.save(async () => {
-                  const image = await api<Picture>(
-                    '/images?private=true',
-                    'POST',
-                    form,
-                  );
-                  setReference(image);
-                  await client.invalidateQueries({ queryKey: ['images'] });
+                  setReferenceUpload({ name: file.name, progress: 0 });
+                  try {
+                    const image = await uploadImage('/images?private=true', form,
+                      (progress) => setReferenceUpload({ name: file.name, progress }));
+                    setReference(image);
+                    await client.invalidateQueries({ queryKey: ['images'] });
+                  } finally {
+                    setReferenceUpload(null);
+                  }
                 });
               }}
             />
+            {referenceUpload && (
+              <div className="cove-reference-progress" role="status">
+                <p>{referenceUpload.name} · {referenceUpload.progress === 100 ? '图片已传完，正在保存…' : `上传中 ${referenceUpload.progress}%`}</p>
+                <progress aria-label="参考图片上传进度" max={100} value={referenceUpload.progress} />
+              </div>
+            )}
             {reference && (
               <div className="cove-chat-reference">
-                <ImagePlus />
+                <img src={`/api/v1/images/${reference.id}/thumbnail`} alt={`参考图 ${reference.original_name}`} />
                 <span>
                   {reference.original_name}
                   <small>参考图片 · 审核通过后用于生成</small>

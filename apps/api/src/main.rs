@@ -450,6 +450,9 @@ struct Page {
     page: Option<i64>,
     album_id: Option<Uuid>,
     all: Option<bool>,
+    content_hash: Option<String>,
+    ids: Option<String>,
+    expected_user_id: Option<Uuid>,
 }
 fn offset(page: Option<i64>) -> ApiResult<i64> {
     let page = page.unwrap_or(1);
@@ -464,12 +467,52 @@ async fn list_images(
     Query(query): Query<Page>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let user = authenticate(&headers, &state).await?;
+    if query.expected_user_id.is_some_and(|id| id != user.id) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "账号已切换，请重新打开工作台".into(),
+        ));
+    }
     let all = query.all.unwrap_or(false);
     if all && !user.is_admin {
         return Err(forbidden());
     }
-    let rows: Vec<ImageRow> = sqlx::query_as("SELECT * FROM images WHERE ($1 OR user_id=$2) AND ($3::uuid IS NULL OR album_id=$3) ORDER BY created_at DESC,id DESC LIMIT 49 OFFSET $4")
-        .bind(all).bind(user.id).bind(query.album_id).bind(offset(query.page)?).fetch_all(&state.pool).await.map_err(internal)?;
+    if query
+        .content_hash
+        .as_ref()
+        .is_some_and(|hash| hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err(bad("图片摘要无效"));
+    }
+    let ids = query
+        .ids
+        .as_ref()
+        .map(|ids| {
+            if ids.len() > 48 * 37 || ids.split(',').count() > 48 {
+                return Err(bad("一次最多查询 48 张图片"));
+            }
+            ids.split(',')
+                .map(|id| Uuid::parse_str(id).map_err(|_| bad("图片 ID 无效")))
+                .collect::<ApiResult<Vec<_>>>()
+        })
+        .transpose()?;
+    // Reconcile only after an earlier upload has finished committing its file.
+    let _upload = if query.content_hash.is_some() {
+        Some(
+            tokio::time::timeout(std::time::Duration::from_secs(10), state.uploads.lock())
+                .await
+                .map_err(|_| {
+                    ApiError(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "上次上传仍在处理，请稍后重试".into(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let rows: Vec<ImageRow> = sqlx::query_as("SELECT * FROM images WHERE ($1 OR user_id=$2) AND ($3::uuid IS NULL OR album_id=$3) AND ($5::text IS NULL OR (content_hash=LOWER($5) AND deleted_at IS NULL)) AND ($6::uuid[] IS NULL OR id=ANY($6)) ORDER BY created_at DESC,id DESC LIMIT 49 OFFSET $4")
+        .bind(all).bind(user.id).bind(query.album_id).bind(offset(query.page)?).bind(query.content_hash).bind(ids).fetch_all(&state.pool).await.map_err(internal)?;
     let has_more = rows.len() > 48;
     Ok(Json(
         serde_json::json!({"items": rows.into_iter().take(48).map(|r| image_dto(r,&state)).collect::<Vec<_>>(),"has_more":has_more}),
@@ -502,6 +545,7 @@ fn validate_image(bytes: &[u8]) -> ApiResult<(&'static str, &'static str, u32, u
 struct UploadOptions {
     private: Option<bool>,
     album_id: Option<Uuid>,
+    expected_user_id: Option<Uuid>,
 }
 async fn upload_image(
     State(state): State<Arc<AppState>>,
@@ -510,6 +554,12 @@ async fn upload_image(
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let user = authenticate(&headers, &state).await?;
+    if options.expected_user_id.is_some_and(|id| id != user.id) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "账号已切换，请重新打开工作台".into(),
+        ));
+    }
     ai::can_create(&user)?;
     rate(&state, format!("upload:{}", user.id), 60, 60).await?;
     let _guard = state.uploads.lock().await;
@@ -780,14 +830,23 @@ struct AlbumInput {
     name: String,
     description: Option<String>,
 }
+#[derive(Serialize, sqlx::FromRow)]
+struct AlbumSummary {
+    id: Uuid,
+    name: String,
+    description: Option<String>,
+    image_count: i64,
+    cover_id: Option<Uuid>,
+}
 async fn albums(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> ApiResult<Json<Vec<Album>>> {
+) -> ApiResult<Json<Vec<AlbumSummary>>> {
     let user = authenticate(&headers, &state).await?;
     Ok(Json(
-        sqlx::query_as("SELECT id,name,description FROM albums WHERE user_id=$1 ORDER BY name,id")
+        sqlx::query_as("SELECT a.id,a.name,a.description,COUNT(i.id) AS image_count, (ARRAY_AGG(i.id ORDER BY i.created_at DESC,i.id DESC) FILTER (WHERE $2 OR i.moderation_status NOT IN ('blocked','review')))[1] AS cover_id FROM albums a LEFT JOIN images i ON i.album_id=a.id AND i.user_id=a.user_id AND i.deleted_at IS NULL WHERE a.user_id=$1 GROUP BY a.id ORDER BY a.name,a.id")
             .bind(user.id)
+            .bind(user.is_admin)
             .fetch_all(&state.pool)
             .await
             .map_err(internal)?,

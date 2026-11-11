@@ -14,6 +14,7 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(5000);
+  page.on('dialog', (dialog) => dialog.accept());
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
@@ -30,22 +31,28 @@ try {
   let enabled = true;
   let failMessage = false;
   let resultStatus = 'completed';
+  let finishReference;
   await page.route('**/*', async (route) => {
     const u = new URL(route.request().url());
     if (u.hostname !== 'piccove.test') return route.abort();
     const path = u.pathname;
     const method = route.request().method();
     const json = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
+    if (path.endsWith('/thumbnail')) return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><rect width="320" height="240" fill="#e7eeeb"/></svg>' });
     if (path.startsWith('/api/v1')) {
       const api = path.slice(7);
       if (api === '/me') return json({ user: { id: 'u', username: 'tester', is_admin: true, quota_bytes: 100000 }, used_bytes: 100 });
       if (api === '/settings') return json({ registration_open: false });
       if (api === '/albums') return json([]);
-      if (api === '/images' && method === 'GET') return json({ items: images, has_more: false });
+      if (api === '/images' && method === 'GET') return json({ items: u.searchParams.has('ids') ? images.filter((item) => u.searchParams.get('ids').split(',').includes(item.id)) : images, has_more: false });
       if (api === '/images' && method === 'POST') {
-        if (u.searchParams.has('private')) return json(picture('reference', { is_public: false }));
+        if (u.searchParams.has('private')) {
+          finishReference = (status = 201) => json(status === 201 ? picture('reference', { is_public: false }) : { error: '模拟参考图失败' }, status);
+          return;
+        }
         const results = [picture('first'), picture('private', { is_public: false, duplicate: true }), null, picture('last')];
         const result = results[uploadIndex++];
+        if (result && !images.some((item) => item.id === result.id)) images.push(result);
         return json(result || { error: '模拟失败' }, result ? 200 : 400);
       }
       if (api === '/ai/status') return json({ enabled, unlimited: true, used: 0, daily_limit: 20 });
@@ -68,12 +75,21 @@ try {
   });
   const noOverflow = async () => assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   const file = (name) => ({ name: `${name}.png`, mimeType: 'image/png', buffer: Buffer.from('fixture') });
+  const releaseReference = async (status = 201) => {
+    for (let i = 0; !finishReference && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert(finishReference, 'Reference upload must reach the API');
+    const reply = finishReference;
+    finishReference = undefined;
+    await reply(status);
+  };
   await page.goto('http://piccove.test/app');
   await page.getByRole('checkbox', { name: '选择本页' }).check();
-  const batch = page.locator('.cove-batch-links').last();
+  await page.locator('.cove-batch').getByRole('button', { name: '复制链接', exact: true }).click();
+  const batch = page.getByRole('dialog').locator('.cove-batch-links');
+  await batch.getByRole('textbox').waitFor();
   const direct = [images[0].url, images[1].url].join('\n');
   assert.equal(await batch.getByRole('textbox').inputValue(), direct);
-  await batch.getByText('已跳过 2 张私有或待清理图片，公开状态保持不变。').waitFor();
+  await batch.getByText('已跳过 2 张不可分享图片（私有、待清理或审核限制），公开状态保持不变。').waitFor();
   await batch.getByRole('button', { name: '复制全部链接' }).click();
   assert.equal(await page.evaluate(() => window.copiedText), direct);
   await batch.getByRole('combobox').click();
@@ -96,25 +112,33 @@ try {
   await batch.getByRole('textbox').focus();
   assert(await batch.getByRole('textbox').evaluate((el) => el.readOnly && el.selectionStart === 0 && el.selectionEnd === el.value.length));
   await page.evaluate(() => { window.denyClipboard = false; });
+  await page.keyboard.press('Escape');
   for (const name of ['a.png', 'b.png']) await page.getByRole('checkbox', { name: `选择 ${name}`, exact: true }).uncheck();
+  await page.locator('.cove-batch').getByRole('button', { name: '复制链接', exact: true }).click();
   assert.equal(await batch.getByRole('textbox').inputValue(), '');
   assert(await batch.getByRole('button', { name: '复制全部链接' }).isDisabled());
+  await page.keyboard.press('Escape');
   for (const name of ['private.png', 'deleted.png']) await page.getByRole('checkbox', { name: `选择 ${name}`, exact: true }).uncheck();
   await page.getByRole('checkbox', { name: '选择 a.png', exact: true }).check();
-  await page.getByRole('button', { name: '查看 / 复制外链', exact: true }).click();
-  assert.equal(await page.getByRole('dialog').getByRole('textbox').count(), 6);
+  await page.getByRole('button', { name: '复制链接', exact: true }).click();
+  await page.getByRole('dialog').getByRole('textbox').waitFor();
+  assert.equal(await page.getByRole('dialog').getByRole('textbox').count(), 1);
   await page.keyboard.press('Escape');
   await page.getByRole('checkbox', { name: '选择 a.png', exact: true }).uncheck();
   assert.equal(await page.locator('.cove-batch-links').count(), 0);
   await page.locator('input[type=file]').first().setInputFiles(['first', 'private', 'failed', 'last'].map(file));
   const uploaded = page.getByRole('region', { name: '上传队列' });
   await uploaded.getByRole('heading', { name: '上传结果' }).waitFor();
-  assert.equal(await uploaded.getByRole('textbox', { name: '批量图片链接' }).inputValue(), 'http://piccove.test/i/first\nhttp://piccove.test/i/last');
-  await uploaded.getByRole('button', { name: '复制全部链接' }).click();
+  await uploaded.getByRole('button', { name: '复制本次链接' }).click();
+  const uploadLinks = page.getByRole('dialog');
+  assert.equal(await uploadLinks.getByRole('textbox', { name: '批量图片链接' }).inputValue(), 'http://piccove.test/i/first\nhttp://piccove.test/i/last');
+  await uploadLinks.getByRole('button', { name: '复制全部链接' }).click();
   assert.equal(await page.evaluate(() => window.copiedText), 'http://piccove.test/i/first\nhttp://piccove.test/i/last');
-  await uploaded.getByRole('combobox').click();
+  await uploadLinks.getByRole('combobox').click();
   await page.getByRole('option', { name: 'Markdown 外链', exact: true }).click();
-  assert.equal(await uploaded.getByRole('textbox').inputValue(), '![first.png](http://piccove.test/i/first)\n![last.png](http://piccove.test/i/last)');
+  assert.equal(await uploadLinks.getByRole('textbox').inputValue(), '![first.png](http://piccove.test/i/first)\n![last.png](http://piccove.test/i/last)');
+  await page.keyboard.press('Escape');
+  await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
   await page.setViewportSize({ width: 390, height: 844 });
   await noOverflow();
   await page.screenshot({ path: `${dir}/batch-mobile.png`, fullPage: true });
@@ -147,7 +171,16 @@ try {
     return event.defaultPrevented;
   }), false, 'IME confirmation must not be intercepted as send');
   await page.getByLabel('参考图片', { exact: true }).setInputFiles(file('reference'));
+  await page.getByRole('progressbar', { name: '参考图片上传进度' }).waitFor();
+  assert(await page.getByRole('button', { name: '生成图片', exact: true }).isDisabled());
+  await releaseReference(500);
+  await page.getByText('模拟参考图失败', { exact: true }).waitFor();
+  assert.equal((await prompt.inputValue()).trim(), '海边的白色小屋');
+  await page.getByLabel('参考图片', { exact: true }).setInputFiles(file('reference'));
+  await page.getByRole('progressbar', { name: '参考图片上传进度' }).waitFor();
+  await releaseReference();
   await page.locator('.cove-chat-reference').waitFor();
+  await page.waitForFunction(() => document.querySelector('.cove-chat-reference img')?.naturalWidth > 0);
   failMessage = true;
   await prompt.press('Enter');
   await page.getByText('模拟生成失败，请重试', { exact: true }).waitFor();

@@ -27,13 +27,19 @@ export type Picture = {
   moderation_reason: string;
   moderation_hold: boolean;
 };
-export type Album = { id: string; name: string; description: string | null };
+export type Album = {
+  id: string;
+  name: string;
+  description: string | null;
+  image_count?: number;
+  cover_id?: string | null;
+};
 export type Settings = {
   registration_open: boolean;
   contact_url: string | null;
 };
 export type Page<T> = { items: T[]; has_more: boolean };
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
@@ -45,10 +51,12 @@ export async function api<T>(
   path: string,
   method = 'GET',
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     method,
     credentials: 'same-origin',
+    signal,
     headers:
       body && !(body instanceof FormData)
         ? { 'Content-Type': 'application/json' }
@@ -94,6 +102,33 @@ export function size(bytes: number) {
   if (bytes < 1024 * 1024 * 1024)
     return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+}
+export function sharingProblem(image: Picture): string | null {
+  if (image.deleted_at) return '图片已删除，链接已失效';
+  if (['blocked', 'review'].includes(image.moderation_status))
+    return '图片被审核限制，暂不能公开分享';
+  if (image.moderation_hold && ['pending', 'running', 'failed'].includes(image.moderation_status))
+    return '图片尚未通过审核，暂不能公开分享';
+  if (!image.is_public) return '这是私有图片，如需公开分享，请先在安卓端设为公开';
+  return null;
+}
+export async function latestPictures(pictures: Picture[], all = false, signal?: AbortSignal) {
+  const request = new AbortController();
+  const abort = () => request.abort();
+  if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, 15000);
+  const ids = [...new Set(pictures.map((item) => item.id))];
+  const current = new Map<string, Picture>();
+  try {
+    for (let index = 0; index < ids.length; index += 48) {
+      const page = await api<Page<Picture>>(`/images?all=${all}&ids=${ids.slice(index, index + 48).join(',')}`, 'GET', undefined, request.signal);
+      page.items.forEach((item) => current.set(item.id, item));
+    }
+    return pictures.map((item) => current.get(item.id) || { ...item, deleted_at: item.deleted_at || new Date().toISOString() });
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
 }
 export function imageLink(image: Picture, format: string): string {
   if (format === 'bbcode')

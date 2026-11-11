@@ -35,8 +35,11 @@ export function uploadImage(
     };
     request.upload.onload = () => onProgress(100);
     request.onload = () => {
-      if (request.status >= 200 && request.status < 300)
-        resolve(request.response || {});
+      if (request.status >= 200 && request.status < 300) {
+        if (typeof request.response?.id !== 'string' || !request.response.id)
+          reject(new UploadError('上传响应不完整，结果待核对，请重试', 0));
+        else resolve(request.response);
+      }
       else
         reject(
           new UploadError(
