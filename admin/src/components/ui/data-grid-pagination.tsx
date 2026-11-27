@@ -23,14 +23,14 @@ function DataGridPagination(props: DataGridPaginationProps) {
   const { table, recordCount, isLoading } = useDataGrid();
 
   const defaultProps: Partial<DataGridPaginationProps> = {
-    sizes: [5, 10, 25, 50, 100],
-    sizesLabel: 'Show',
-    sizesDescription: 'per page',
-    sizesSkeleton: <Skeleton className="h-8 w-44" />,
+    sizes: [48],
+    sizesLabel: '每页',
+    sizesDescription: '条',
+    sizesSkeleton: <Skeleton className="h-8 w-36" />,
     moreLimit: 5,
     more: false,
-    info: '{from} - {to} of {count}',
-    infoSkeleton: <Skeleton className="h-8 w-60" />,
+    info: '显示 {from} - {to} 条，共 {count} 条',
+    infoSkeleton: <Skeleton className="h-8 w-52" />,
   };
 
   const mergedProps: DataGridPaginationProps = { ...defaultProps, ...props };
@@ -39,8 +39,8 @@ function DataGridPagination(props: DataGridPaginationProps) {
   const btnArrowClasses = btnBaseClasses + ' rtl:transform rtl:rotate-180';
   const pageIndex = table.getState().pagination.pageIndex;
   const pageSize = table.getState().pagination.pageSize;
-  const from = pageIndex * pageSize + 1;
-  const to = Math.min((pageIndex + 1) * pageSize, recordCount);
+  const from = recordCount === 0 ? 0 : pageIndex * pageSize + 1;
+  const to = recordCount === 0 ? 0 : Math.min((pageIndex + 1) * pageSize, recordCount);
   const pageCount = table.getPageCount();
 
   // Replace placeholders in paginationInfo
@@ -131,9 +131,9 @@ function DataGridPagination(props: DataGridPaginationProps) {
       <div className="flex flex-wrap items-center space-x-2.5 pb-2.5 sm:pb-0 order-2 sm:order-1">
         {isLoading ? (
           mergedProps?.sizesSkeleton
-        ) : (
+        ) : (mergedProps.sizes?.length || 0) > 1 ? (
           <>
-            <div className="text-sm text-muted-foreground">Rows per page</div>
+            <div className="text-sm text-muted-foreground">每页行数</div>
             <Select
               value={`${pageSize}`}
               indicatorPosition="right"
@@ -154,6 +154,8 @@ function DataGridPagination(props: DataGridPaginationProps) {
               </SelectContent>
             </Select>
           </>
+        ) : (
+          <div className="text-xs text-muted-foreground">每页 {pageSize} 条</div>
         )}
       </div>
       <div className="flex flex-col sm:flex-row justify-center sm:justify-end items-center gap-2.5 pt-2.5 sm:pt-0 order-1 sm:order-2">

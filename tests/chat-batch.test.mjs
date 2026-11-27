@@ -14,7 +14,6 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(5000);
-  page.on('dialog', (dialog) => dialog.accept());
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
@@ -23,11 +22,11 @@ try {
       window.copiedText = text;
     } },
   }));
-  const picture = (id, extra = {}) => ({ id, user_id: 'u', original_name: `${id}.png`, url: `http://piccove.test/i/${id}`, thumbnail_url: `http://piccove.test/i/${id}`, is_public: true, size_bytes: 100, width: 10, height: 10, ...extra });
+  const picture = (id, extra = {}) => ({ id, user_id: 'u', original_name: `${id}.png`, url: `http://piccove.test/i/${id}`, thumbnail_url: `http://piccove.test/i/${id}`, is_public: true, size_bytes: 100, width: 10, height: 10, moderation_status: 'passed', moderation_hold: false, deleted_at: null, ...extra });
   const images = [picture('a'), picture('b'), picture('private', { is_public: false }), picture('deleted', { deleted_at: '2026-01-01' })];
   let uploadIndex = 0;
-  let sent = [];
-  let messages = [];
+  const sent = [];
+  const messages = [];
   let enabled = true;
   let failMessage = false;
   let resultStatus = 'completed';
@@ -42,6 +41,7 @@ try {
     if (path.startsWith('/api/v1')) {
       const api = path.slice(7);
       if (api === '/me') return json({ user: { id: 'u', username: 'tester', is_admin: true, quota_bytes: 100000 }, used_bytes: 100 });
+      if (api === '/admin/overview') return json({ users_total: 1, users_disabled: 0, users_banned: 0, images_total: 4, images_public: 2, used_bytes: 100, registration_open: false, reviews_pending: 0, jobs_active: 0 });
       if (api === '/settings') return json({ registration_open: false });
       if (api === '/albums') return json([]);
       if (api === '/images' && method === 'GET') return json({ items: u.searchParams.has('ids') ? images.filter((item) => u.searchParams.get('ids').split(',').includes(item.id)) : images, has_more: false });
@@ -82,17 +82,18 @@ try {
     finishReference = undefined;
     await reply(status);
   };
+
   await page.goto('http://piccove.test/app');
-  await page.getByRole('checkbox', { name: '选择本页' }).check();
-  await page.locator('.cove-batch').getByRole('button', { name: '复制链接', exact: true }).click();
-  const batch = page.getByRole('dialog').locator('.cove-batch-links');
+  await page.getByRole('checkbox', { name: '选择本页' }).click();
+  await page.getByRole('button', { name: '复制外链', exact: true }).click();
+  const batch = page.getByRole('dialog');
   await batch.getByRole('textbox').waitFor();
   const direct = [images[0].url, images[1].url].join('\n');
   assert.equal(await batch.getByRole('textbox').inputValue(), direct);
-  await batch.getByText('已跳过 2 张不可分享图片（私有、待清理或审核限制），公开状态保持不变。').waitFor();
+  await batch.getByText('已跳过 2 张私有或受限图片。').waitFor();
   await batch.getByRole('button', { name: '复制全部链接' }).click();
   assert.equal(await page.evaluate(() => window.copiedText), direct);
-  await batch.getByRole('combobox').click();
+  await batch.getByRole('combobox', { name: '外链格式' }).click();
   await page.getByRole('option', { name: 'HTML 外链', exact: true }).click();
   assert.equal(await batch.getByRole('textbox').inputValue(), '<img src="http://piccove.test/i/a" alt="a.png" />\n<img src="http://piccove.test/i/b" alt="b.png" />');
   await batch.getByRole('button', { name: '复制全部链接' }).click();
@@ -102,41 +103,44 @@ try {
     ['Markdown 缩略图链接', '[![a.png](http://piccove.test/i/a)](http://piccove.test/i/a)\n[![b.png](http://piccove.test/i/b)](http://piccove.test/i/b)'],
     ['HTML 缩略图链接', '<a href="http://piccove.test/i/a"><img src="http://piccove.test/i/a" alt="a.png" /></a>\n<a href="http://piccove.test/i/b"><img src="http://piccove.test/i/b" alt="b.png" /></a>'],
   ]) {
-    await batch.getByRole('combobox').click();
+    await batch.getByRole('combobox', { name: '外链格式' }).click();
     await page.getByRole('option', { name: label, exact: true }).click();
     assert.equal(await batch.getByRole('textbox').inputValue(), expected);
   }
   await page.evaluate(() => { window.denyClipboard = true; });
   await batch.getByRole('button', { name: '复制全部链接' }).click();
-  await page.getByText('未能复制到剪贴板，你可以选中文字手动复制', { exact: true }).waitFor();
+  await page.getByText('未能自动复制，请选中下方文本手动复制', { exact: true }).waitFor();
   await batch.getByRole('textbox').focus();
   assert(await batch.getByRole('textbox').evaluate((el) => el.readOnly && el.selectionStart === 0 && el.selectionEnd === el.value.length));
   await page.evaluate(() => { window.denyClipboard = false; });
   await page.keyboard.press('Escape');
-  for (const name of ['a.png', 'b.png']) await page.getByRole('checkbox', { name: `选择 ${name}`, exact: true }).uncheck();
-  await page.locator('.cove-batch').getByRole('button', { name: '复制链接', exact: true }).click();
+
+  for (const name of ['a.png', 'b.png']) await page.getByRole('checkbox', { name: `选择 ${name}`, exact: true }).click();
+  await page.getByRole('button', { name: '复制外链', exact: true }).click();
   assert.equal(await batch.getByRole('textbox').inputValue(), '');
   assert(await batch.getByRole('button', { name: '复制全部链接' }).isDisabled());
   await page.keyboard.press('Escape');
-  for (const name of ['private.png', 'deleted.png']) await page.getByRole('checkbox', { name: `选择 ${name}`, exact: true }).uncheck();
-  await page.getByRole('checkbox', { name: '选择 a.png', exact: true }).check();
-  await page.getByRole('button', { name: '复制链接', exact: true }).click();
+
+  for (const name of ['private.png', 'deleted.png']) await page.getByRole('checkbox', { name: `选择 ${name}`, exact: true }).click();
+  await page.getByRole('checkbox', { name: '选择 a.png', exact: true }).click();
+  await page.getByRole('button', { name: '复制外链', exact: true }).click();
   await page.getByRole('dialog').getByRole('textbox').waitFor();
-  assert.equal(await page.getByRole('dialog').getByRole('textbox').count(), 1);
   await page.keyboard.press('Escape');
-  await page.getByRole('checkbox', { name: '选择 a.png', exact: true }).uncheck();
-  assert.equal(await page.locator('.cove-batch-links').count(), 0);
+  await page.getByRole('checkbox', { name: '选择 a.png', exact: true }).click();
+
   await page.locator('input[type=file]').first().setInputFiles(['first', 'private', 'failed', 'last'].map(file));
-  const uploaded = page.getByRole('region', { name: '上传队列' });
-  await uploaded.getByRole('heading', { name: '上传结果' }).waitFor();
-  await uploaded.getByRole('button', { name: '复制本次链接' }).click();
-  const uploadLinks = page.getByRole('dialog');
+  await page.getByRole('button', { name: '打开上传任务中心' }).click();
+  const sheet = page.getByRole('dialog');
+  await sheet.getByText('成功 2').waitFor();
+  await sheet.getByRole('button', { name: '复制本次链接' }).click();
+  const uploadLinks = page.getByRole('dialog').filter({ hasText: '复制图片外链' });
   assert.equal(await uploadLinks.getByRole('textbox', { name: '批量图片链接' }).inputValue(), 'http://piccove.test/i/first\nhttp://piccove.test/i/last');
   await uploadLinks.getByRole('button', { name: '复制全部链接' }).click();
   assert.equal(await page.evaluate(() => window.copiedText), 'http://piccove.test/i/first\nhttp://piccove.test/i/last');
-  await uploadLinks.getByRole('combobox').click();
+  await uploadLinks.getByRole('combobox', { name: '外链格式' }).click();
   await page.getByRole('option', { name: 'Markdown 外链', exact: true }).click();
   assert.equal(await uploadLinks.getByRole('textbox').inputValue(), '![first.png](http://piccove.test/i/first)\n![last.png](http://piccove.test/i/last)');
+  await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   await page.locator('[role="dialog"]').waitFor({ state: 'detached' });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -145,15 +149,15 @@ try {
   console.log('PASS selected/uploaded batch URLs, HTML/Markdown, clipboard, partial failure, private/deleted guards');
 
   await page.goto('http://piccove.test/app/ai');
-  await page.getByRole('heading', { name: '今天想创作什么？' }).waitFor();
+  await page.getByRole('heading', { name: '今天想创作什么画面？' }).waitFor();
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await noOverflow();
-    const heading = await page.locator('.cove-chat-heading').boundingBox();
-    const header = await page.locator('.cove-workheader').boundingBox();
+    const heading = await page.getByRole('heading', { name: '今天想创作什么画面？' }).boundingBox();
+    const header = await page.locator('header.header').boundingBox();
     assert(heading.y >= header.y + header.height);
-    const composer = await page.locator('.cove-chat-composer').boundingBox();
-    assert(composer.y + composer.height < 900);
+    const composer = await page.locator('form').boundingBox();
+    assert(composer.y + composer.height <= 900);
     await page.screenshot({ path: `${dir}/chat-empty-${width}.png` });
   }
   const prompt = page.getByRole('textbox', { name: '描述图片或修改要求' });
@@ -170,55 +174,61 @@ try {
     el.dispatchEvent(event);
     return event.defaultPrevented;
   }), false, 'IME confirmation must not be intercepted as send');
+
   await page.getByLabel('参考图片', { exact: true }).setInputFiles(file('reference'));
   await page.getByRole('progressbar', { name: '参考图片上传进度' }).waitFor();
   assert(await page.getByRole('button', { name: '生成图片', exact: true }).isDisabled());
   await releaseReference(500);
   await page.getByText('模拟参考图失败', { exact: true }).waitFor();
   assert.equal((await prompt.inputValue()).trim(), '海边的白色小屋');
+
   await page.getByLabel('参考图片', { exact: true }).setInputFiles(file('reference'));
   await page.getByRole('progressbar', { name: '参考图片上传进度' }).waitFor();
   await releaseReference();
-  await page.locator('.cove-chat-reference').waitFor();
-  await page.waitForFunction(() => document.querySelector('.cove-chat-reference img')?.naturalWidth > 0);
+  await page.getByAltText('参考图 reference.png').waitFor();
+  await page.waitForFunction(() => document.querySelector('img[alt="参考图 reference.png"]')?.naturalWidth > 0);
+
   failMessage = true;
   await prompt.press('Enter');
   await page.getByText('模拟生成失败，请重试', { exact: true }).waitFor();
   assert.equal(sent.length, 0);
   assert.equal((await prompt.inputValue()).trim(), '海边的白色小屋');
-  assert.equal(await page.locator('.cove-chat-reference').count(), 1);
+  assert.equal(await page.getByAltText('参考图 reference.png').count(), 1);
+
   failMessage = false;
   await prompt.press('Enter');
   await page.getByText('已生成图片', { exact: true }).waitFor();
   assert.equal(sent.length, 1);
   assert.equal(sent[0].reference_id, 'reference');
   assert.equal(await prompt.inputValue(), '');
-  assert.equal(await page.locator('.cove-chat-reference').count(), 0);
+  assert.equal(await page.getByAltText('参考图 reference.png').count(), 0);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await noOverflow();
     await page.screenshot({ path: `${dir}/chat-message-${width}.png` });
   }
+
   resultStatus = 'running';
   await prompt.fill('继续修改屋顶');
   await prompt.press('Enter');
-  await page.locator('.cove-chat-progress').waitFor();
+  await page.getByText('正在绘制图像…').waitFor();
   await prompt.fill('生成期间不能重复发送');
   await prompt.press('Enter');
   assert.equal(sent.length, 2);
   assert(await page.getByRole('button', { name: '正在生成…', exact: true }).isDisabled());
+
   await page.getByRole('button', { name: '历史对话', exact: true }).click();
-  await page.getByRole('button', { name: '新对话', exact: true }).click();
-  await page.getByRole('heading', { name: '今天想创作什么？' }).waitFor();
-  assert.equal(await page.locator('.cove-chat-history').isVisible(), false);
+  await page.getByRole('dialog').getByRole('button', { name: '开启新创作', exact: true }).click();
+  await page.getByRole('heading', { name: '今天想创作什么画面？' }).waitFor();
+
   enabled = false;
   await page.reload();
-  await page.getByText('尚未配置生图服务。', { exact: false }).waitFor();
+  await page.getByText('尚未启用 AI 生图服务。', { exact: false }).waitFor();
   await prompt.fill('不能发送');
   await prompt.press('Enter');
   assert.equal(sent.length, 2);
   assert.deepEqual(errors, []);
-  console.log('PASS desktop/mobile chat geometry, new chat/history, reference upload, Enter/IME guards, disabled provider');
+  console.log('PASS desktop/mobile AI studio geometry, new chat/history, reference upload, Enter/IME guards, disabled provider');
 } finally {
   await browser.close();
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { decode, encode } from '../admin/src/piccove/passkey';
-import { api, imageLink, latestPictures, sharingProblem, size, type Picture } from '../admin/src/piccove/api';
+import { decode, encode } from '../admin/src/lib/passkey';
+import { api, imageLink, latestPictures, sharingProblem, size, type Picture } from '../admin/src/lib/api';
 const picture = {
   url: 'https://img.example/i/id',
   thumbnail_url: 'https://img.example/api/v1/images/id/thumbnail',

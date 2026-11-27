@@ -23,7 +23,10 @@ use chrono::{DateTime, Utc};
 use image::{ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{
+    postgres::{PgPoolOptions, PgRow},
+    FromRow, PgPool, Row,
+};
 use std::{env, io::Cursor, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, Semaphore};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -448,11 +451,25 @@ async fn change_password(
 #[derive(Deserialize)]
 struct Page {
     page: Option<i64>,
+}
+#[derive(Deserialize)]
+struct ImageListQuery {
+    page: Option<i64>,
     album_id: Option<Uuid>,
     all: Option<bool>,
     content_hash: Option<String>,
     ids: Option<String>,
     expected_user_id: Option<Uuid>,
+    q: Option<String>,
+    is_public: Option<bool>,
+    moderation_status: Option<String>,
+    user_id: Option<Uuid>,
+}
+#[derive(Deserialize)]
+struct AdminListQuery {
+    page: Option<i64>,
+    q: Option<String>,
+    status: Option<String>,
 }
 fn offset(page: Option<i64>) -> ApiResult<i64> {
     let page = page.unwrap_or(1);
@@ -461,10 +478,52 @@ fn offset(page: Option<i64>) -> ApiResult<i64> {
     }
     Ok((page - 1) * 48)
 }
+fn search_pattern(q: Option<&str>, max_chars: Option<usize>) -> ApiResult<Option<String>> {
+    let Some(term) = q.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if max_chars.is_some_and(|max| term.chars().count() > max) {
+        return Err(bad("搜索词过长"));
+    }
+    let escaped = term
+        .replace('\\', r"\\")
+        .replace('%', r"\%")
+        .replace('_', r"\_");
+    Ok(Some(format!("%{escaped}%")))
+}
+fn moderation_filter(status: Option<&str>, include_image_states: bool) -> ApiResult<Option<&str>> {
+    match status.map(str::trim) {
+        None | Some("") => Ok(None),
+        value @ Some(
+            "pending" | "running" | "passed" | "blocked" | "review" | "failed" | "exempt",
+        ) => Ok(value),
+        value @ Some("unreviewed") if include_image_states => Ok(value),
+        _ => Err(bad("审核状态筛选无效")),
+    }
+}
+fn list_response(
+    rows: &[PgRow],
+    start: i64,
+    item: impl Fn(&PgRow) -> Result<serde_json::Value, sqlx::Error>,
+) -> ApiResult<Json<serde_json::Value>> {
+    // The count is LEFT JOINed to the page, so even an empty page returns one row.
+    let total: i64 = rows[0].try_get("total").map_err(internal)?;
+    let items = if start < total {
+        rows.iter()
+            .map(item)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?
+    } else {
+        Vec::new()
+    };
+    Ok(Json(
+        serde_json::json!({"items":items,"has_more":start + 48 < total,"total":total}),
+    ))
+}
 async fn list_images(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<Page>,
+    Query(query): Query<ImageListQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let user = authenticate(&headers, &state).await?;
     if query.expected_user_id.is_some_and(|id| id != user.id) {
@@ -474,9 +533,11 @@ async fn list_images(
         ));
     }
     let all = query.all.unwrap_or(false);
-    if all && !user.is_admin {
-        return Err(forbidden());
-    }
+    let owner = match (all, query.user_id) {
+        (true, owner) if user.is_admin => owner,
+        (false, None) => Some(user.id),
+        _ => return Err(forbidden()),
+    };
     if query
         .content_hash
         .as_ref()
@@ -496,6 +557,8 @@ async fn list_images(
                 .collect::<ApiResult<Vec<_>>>()
         })
         .transpose()?;
+    let q = search_pattern(query.q.as_deref(), Some(200))?;
+    let status = moderation_filter(query.moderation_status.as_deref(), true)?;
     // Reconcile only after an earlier upload has finished committing its file.
     let _upload = if query.content_hash.is_some() {
         Some(
@@ -511,12 +574,43 @@ async fn list_images(
     } else {
         None
     };
-    let rows: Vec<ImageRow> = sqlx::query_as("SELECT * FROM images WHERE ($1 OR user_id=$2) AND ($3::uuid IS NULL OR album_id=$3) AND ($5::text IS NULL OR (content_hash=LOWER($5) AND deleted_at IS NULL)) AND ($6::uuid[] IS NULL OR id=ANY($6)) ORDER BY created_at DESC,id DESC LIMIT 49 OFFSET $4")
-        .bind(all).bind(user.id).bind(query.album_id).bind(offset(query.page)?).bind(query.content_hash).bind(ids).fetch_all(&state.pool).await.map_err(internal)?;
-    let has_more = rows.len() > 48;
-    Ok(Json(
-        serde_json::json!({"items": rows.into_iter().take(48).map(|r| image_dto(r,&state)).collect::<Vec<_>>(),"has_more":has_more}),
-    ))
+    let start = offset(query.page)?;
+    let rows = sqlx::query(
+        r"WITH filtered AS NOT MATERIALIZED (
+              SELECT * FROM images
+              WHERE ($1::uuid IS NULL OR user_id = $1)
+                AND ($2::uuid IS NULL OR album_id = $2)
+                AND ($3::text IS NULL OR (content_hash = LOWER($3) AND deleted_at IS NULL))
+                AND ($4::uuid[] IS NULL OR id = ANY($4))
+                AND ($5::text IS NULL OR original_name ILIKE $5 ESCAPE E'\\')
+                AND ($6::boolean IS NULL OR is_public = $6)
+                AND ($7::text IS NULL OR moderation_status = $7)
+          )
+          SELECT p.*, u.username, c.total
+          FROM (SELECT COUNT(*) AS total FROM filtered) c
+          LEFT JOIN (SELECT * FROM filtered ORDER BY created_at DESC, id DESC LIMIT 48 OFFSET $8) p ON TRUE
+          LEFT JOIN users u ON u.id = p.user_id AND $9
+          ORDER BY p.created_at DESC, p.id DESC",
+    )
+    .bind(owner)
+    .bind(query.album_id)
+    .bind(query.content_hash)
+    .bind(ids)
+    .bind(q)
+    .bind(query.is_public)
+    .bind(status)
+    .bind(start)
+    .bind(all)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+    list_response(&rows, start, |row| {
+        let mut image = image_dto(ImageRow::from_row(row)?, &state);
+        if all {
+            image["username"] = row.try_get::<String, _>("username")?.into();
+        }
+        Ok(image)
+    })
 }
 fn validate_image(bytes: &[u8]) -> ApiResult<(&'static str, &'static str, u32, u32)> {
     if bytes.is_empty() || bytes.len() > MAX_UPLOAD_BYTES {
@@ -713,8 +807,14 @@ async fn store_image(
 }
 #[derive(Deserialize)]
 struct ImageUpdate {
-    original_name: String,
-    album_id: Option<Uuid>,
+    original_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_album_id")]
+    album_id: Option<Option<Uuid>>,
+}
+fn deserialize_album_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<Uuid>>, D::Error> {
+    Option::<Uuid>::deserialize(deserializer).map(Some)
 }
 async fn update_image(
     State(state): State<Arc<AppState>>,
@@ -723,12 +823,27 @@ async fn update_image(
     Json(input): Json<ImageUpdate>,
 ) -> ApiResult<StatusCode> {
     let user = authenticate(&headers, &state).await?;
-    let name = input.original_name.trim();
-    if name.is_empty() || name.chars().count() > 200 {
+    let name = input.original_name.as_deref().map(str::trim);
+    if name.is_none() && input.album_id.is_none() {
+        return Err(bad("缺少修改内容"));
+    }
+    if name.is_some_and(|name| name.is_empty() || name.chars().count() > 200) {
         return Err(bad("图片名称须为 1–200 字符"));
     }
-    let result=sqlx::query("UPDATE images SET original_name=$1,album_id=$2 WHERE id=$3 AND user_id=$4 AND deleted_at IS NULL AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM albums WHERE id=$2 AND user_id=$4))")
-        .bind(name).bind(input.album_id).bind(id).bind(user.id).execute(&state.pool).await.map_err(internal)?;
+    let result = sqlx::query(
+        "UPDATE images SET original_name = COALESCE($1, original_name),
+                           album_id = CASE WHEN $2 THEN $3::uuid ELSE album_id END
+         WHERE id = $4 AND user_id = $5 AND deleted_at IS NULL
+           AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM albums WHERE id = $3 AND user_id = $5))",
+    )
+    .bind(name)
+    .bind(input.album_id.is_some())
+    .bind(input.album_id.flatten())
+    .bind(id)
+    .bind(user.id)
+    .execute(&state.pool)
+    .await
+    .map_err(internal)?;
     if result.rows_affected() == 0 {
         return Err(missing());
     }
@@ -938,33 +1053,75 @@ async fn delete_album(
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
+async fn admin_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    administrator(&headers, &state).await?;
+    let overview = sqlx::query_scalar(
+        "SELECT to_jsonb(overview) FROM (
+             SELECT u.*, i.*, s.registration_open,
+                    (SELECT COUNT(*) FROM image_reviews WHERE status = 'review') AS reviews_pending,
+                    (SELECT COUNT(*) FROM file_jobs WHERE status IN ('queued','running')) AS jobs_active
+             FROM (SELECT COUNT(*) AS users_total,
+                          COUNT(*) FILTER (WHERE disabled) AS users_disabled,
+                          COUNT(*) FILTER (WHERE content_ban IS NOT NULL) AS users_banned
+                   FROM users) u
+             CROSS JOIN (SELECT COUNT(*) FILTER (WHERE deleted_at IS NULL) AS images_total,
+                                COUNT(*) FILTER (WHERE deleted_at IS NULL AND is_public) AS images_public,
+                                COALESCE(SUM(size_bytes), 0)::bigint AS used_bytes
+                         FROM images) i
+             CROSS JOIN settings s
+         ) overview",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal)?;
+    Ok(Json(overview))
+}
+fn user_status_condition(status: Option<&str>) -> ApiResult<&'static str> {
+    match status.map(str::trim) {
+        None | Some("") => Ok("TRUE"),
+        Some("active") => Ok("NOT disabled AND content_ban IS NULL"),
+        Some("disabled") => Ok("disabled"),
+        Some("banned") => Ok("content_ban IS NOT NULL"),
+        _ => Err(bad("用户状态筛选无效")),
+    }
+}
 async fn users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(page): Query<Page>,
+    Query(query): Query<AdminListQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     administrator(&headers, &state).await?;
-    let rows: Vec<User> =
-        sqlx::query_as("SELECT * FROM users ORDER BY created_at DESC,id DESC LIMIT 49 OFFSET $1")
-            .bind(offset(page.page)?)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(internal)?;
-    let has_more = rows.len() > 48;
-    let mut result = Vec::new();
-    for user in rows.into_iter().take(48) {
-        let used: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(size_bytes),0)::bigint FROM images WHERE user_id=$1",
-        )
-        .bind(user.id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(internal)?;
-        result.push(serde_json::json!({"user":user,"used_bytes":used}));
-    }
-    Ok(Json(
-        serde_json::json!({"items":result,"has_more":has_more}),
+    let start = offset(query.page)?;
+    let q = search_pattern(query.q.as_deref(), Some(100))?;
+    let status = user_status_condition(query.status.as_deref())?;
+    let rows = sqlx::query(&format!(
+        r"WITH filtered AS NOT MATERIALIZED (
+              SELECT * FROM users WHERE ({status}) AND ($1::text IS NULL OR username ILIKE $1 ESCAPE E'\\')
+          ), page AS (
+              SELECT * FROM filtered ORDER BY created_at DESC, id DESC LIMIT 48 OFFSET $2
+          ), usage AS (
+              SELECT i.user_id, SUM(i.size_bytes)::bigint AS used_bytes
+              FROM images i JOIN page p ON p.id = i.user_id GROUP BY i.user_id
+          )
+          SELECT p.*, c.total, COALESCE(usage.used_bytes, 0) AS used_bytes
+          FROM (SELECT COUNT(*) AS total FROM filtered) c
+          LEFT JOIN page p ON TRUE
+          LEFT JOIN usage ON usage.user_id = p.id
+          ORDER BY p.created_at DESC, p.id DESC",
     ))
+    .bind(q)
+    .bind(start)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+    list_response(&rows, start, |row| {
+        let user = User::from_row(row)?;
+        let used: i64 = row.try_get("used_bytes")?;
+        Ok(serde_json::json!({"user":user,"used_bytes":used}))
+    })
 }
 async fn create_user(
     State(state): State<Arc<AppState>>,
@@ -1109,6 +1266,7 @@ fn router(state: Arc<AppState>) -> Router {
             "/api/v1/albums/{id}",
             patch(update_album).delete(delete_album),
         )
+        .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/users", get(users).post(create_user))
         .route("/api/v1/admin/users/{id}", patch(update_user))
         .route("/i/{*key}", get(serve_image))
@@ -1313,6 +1471,66 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_escapes_literals_and_counts_trimmed_characters() {
+        assert_eq!(search_pattern(None, Some(100)).unwrap(), None);
+        assert_eq!(search_pattern(Some(" \t "), None).unwrap(), None);
+        assert_eq!(
+            search_pattern(Some(r"  A\B%_图  "), None)
+                .unwrap()
+                .as_deref(),
+            Some(r"%A\\B\%\_图%")
+        );
+        for max in [100, 200] {
+            let term = "图".repeat(max);
+            assert!(search_pattern(Some(&format!(" {term} ")), Some(max)).is_ok());
+            let longer = format!("{term}图");
+            assert_eq!(
+                search_pattern(Some(&longer), Some(max)).unwrap_err().1,
+                "搜索词过长"
+            );
+            assert!(search_pattern(Some(&longer), None).is_ok());
+        }
+    }
+    #[test]
+    fn image_patch_distinguishes_omitted_null_and_uuid() {
+        use serde_json::{from_value, json};
+        let id = Uuid::new_v4();
+        let empty: ImageUpdate = from_value(json!({})).unwrap();
+        assert_eq!((empty.original_name, empty.album_id), (None, None));
+        let rename: ImageUpdate = from_value(json!({"original_name":"new"})).unwrap();
+        assert_eq!(
+            (rename.original_name.as_deref(), rename.album_id),
+            (Some("new"), None)
+        );
+        let clear: ImageUpdate = from_value(json!({"album_id":null})).unwrap();
+        assert_eq!((clear.original_name, clear.album_id), (None, Some(None)));
+        let move_only: ImageUpdate = from_value(json!({"album_id":id})).unwrap();
+        assert_eq!(
+            (move_only.original_name, move_only.album_id),
+            (None, Some(Some(id)))
+        );
+        let both: ImageUpdate = from_value(json!({"original_name":"new","album_id":id})).unwrap();
+        assert_eq!(
+            (both.original_name.as_deref(), both.album_id),
+            (Some("new"), Some(Some(id)))
+        );
+        assert!(from_value::<ImageUpdate>(json!({"album_id":"invalid"})).is_err());
+    }
+    #[test]
+    fn user_status_filters() {
+        assert_eq!(
+            user_status_condition(Some(" ")).unwrap(),
+            user_status_condition(None).unwrap()
+        );
+        for status in ["active", "disabled", "banned"] {
+            assert!(user_status_condition(Some(&format!(" {status} "))).is_ok());
+        }
+        assert_eq!(
+            user_status_condition(Some("unknown")).unwrap_err().1,
+            "用户状态筛选无效"
+        );
+    }
     #[test]
     fn dated_image_links_and_legacy_ids() {
         let id = Uuid::new_v4();

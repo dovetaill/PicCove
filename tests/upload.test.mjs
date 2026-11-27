@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { uploadImage, UploadError } from '../admin/src/piccove/upload.ts';
+import { uploadImage, UploadError } from '../admin/src/lib/upload.ts';
 
 let request;
 globalThis.XMLHttpRequest = class {

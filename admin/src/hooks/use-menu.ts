@@ -13,11 +13,11 @@ interface UseMenuReturn {
 
 export const useMenu = (pathname: string): UseMenuReturn => {
   const isActive = (path: string | undefined): boolean => {
-    if (path && path === '/') {
-      return path === pathname;
-    } else {
-      return !!path && pathname.startsWith(path);
+    if (!path) return false;
+    if (path === '/' || path === '/app' || path === '/app/admin') {
+      return pathname === path;
     }
+    return pathname === path || pathname.startsWith(`${path}/`);
   };
 
   const hasActiveChild = (children: MenuItem[] | undefined): boolean => {

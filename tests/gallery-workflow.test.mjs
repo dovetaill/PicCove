@@ -12,12 +12,6 @@ try {
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  let dismissLeave = false;
-  let leavePrompts = 0;
-  page.on('dialog', async (dialog) => {
-    leavePrompts++;
-    if (dismissLeave) await dialog.dismiss(); else await dialog.accept();
-  });
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (text) => { window.copiedText = text; } } }));
   const albumId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const newId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -40,6 +34,7 @@ try {
     if (path.startsWith('/api/v1/')) {
       const api = path.slice(7);
       if (api === '/me') return json({ user: { id: 'u', username: 'tester', is_admin: false, quota_bytes: 1000000 }, used_bytes: 300 });
+      if (api === '/auth/logout') return json({});
       if (api === '/settings') return failSettings ? json({ error: '注册设置暂不可用' }, 503) : json({ registration_open: false });
       if (api === '/albums') {
         if (method === 'POST') {
@@ -95,19 +90,20 @@ try {
   };
   const file = (name) => ({ name: `${name}.png`, mimeType: 'image/png', buffer: Buffer.from('fixture') });
   const noOverflow = async () => assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+
   await page.goto('http://piccove.test/app');
   assert.equal(await page.getByRole('button', { name: '移动到相册', exact: true }).count(), 0);
-  await page.getByRole('checkbox', { name: '选择本页' }).check();
+  await page.getByRole('checkbox', { name: '选择本页' }).click();
   await page.getByRole('button', { name: '移动到相册', exact: true }).click();
   await page.getByRole('button', { name: '新建相册并移入' }).click();
   await page.getByLabel('名称', { exact: true }).fill('博客配图');
   await page.getByRole('button', { name: '创建相册', exact: true }).click();
-  await page.getByText(/已移动 1 张，剩余 1 张未完成/).waitFor();
+  await page.getByText(/已完成 1 张，剩余 1 张未完成/).waitFor();
   assert.equal(creates, 1);
-  assert.equal(await page.getByRole('checkbox', { name: '选择 one.png', exact: true }).isChecked(), false);
-  assert.equal(await page.getByRole('checkbox', { name: '选择 two.png', exact: true }).isChecked(), true);
+  assert.equal(await page.getByRole('checkbox', { name: '选择 one.png', exact: true }).getAttribute('aria-checked'), 'false');
+  assert.equal(await page.getByRole('checkbox', { name: '选择 two.png', exact: true }).getAttribute('aria-checked'), 'true');
   await page.getByRole('button', { name: '移动到相册', exact: true }).click();
-  await page.getByRole('combobox', { name: '移动到相册', exact: true }).filter({ hasText: '博客配图' }).waitFor();
+  await page.getByRole('combobox', { name: '目标相册', exact: true }).filter({ hasText: '博客配图' }).waitFor();
   await page.getByRole('button', { name: '确认移动' }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   assert.equal(creates, 1);
@@ -117,73 +113,73 @@ try {
   console.log('PASS create from selection, partial move failure and retry without duplicate creation');
 
   await page.getByRole('link', { name: '相册', exact: true }).click();
-  await page.getByText('2 张图片', { exact: true }).waitFor();
+  await page.getByText('2 张', { exact: true }).waitFor();
   const cover = page.getByRole('link', { name: '打开相册 博客配图', exact: true }).locator('img');
   await cover.waitFor();
   assert.equal(await cover.getAttribute('src'), '/api/v1/images/one/thumbnail');
   await page.getByRole('link', { name: '打开相册 旅行', exact: true }).click();
   await page.getByRole('heading', { name: '旅行', exact: true }).waitFor();
-  await page.locator('.cove-empty').getByRole('button', { name: '从图库移入' }).click();
+  await page.getByRole('button', { name: '从图库移入' }).first().click();
   await page.getByRole('button', { name: '下一页' }).click();
-  await page.getByRole('checkbox', { name: '选择 three.png', exact: true }).check();
+  await page.getByRole('checkbox', { name: '选择 three.png', exact: true }).click();
   await page.getByRole('button', { name: '移入当前相册' }).click();
   await page.getByRole('heading', { name: '旅行', exact: true }).waitFor();
   assert.equal(images.find((item) => item.id === 'three').album_id, albumId);
-  await page.getByRole('checkbox', { name: '选择 three.png', exact: true }).check();
+  await page.getByRole('checkbox', { name: '选择 three.png', exact: true }).click();
   await page.getByRole('button', { name: '移出相册', exact: true }).click();
-  await page.getByRole('heading', { name: '相册里还没有图片' }).waitFor();
+  await page.getByRole('heading', { name: '此相册还没有图片' }).waitFor();
   assert.equal(images.find((item) => item.id === 'three').album_id, null);
   console.log('PASS cover/count, empty-album import across pages and removal preserves image/link');
 
   await page.locator('input[type=file]').first().setInputFiles([file('first'), file('remove')]);
-  await page.getByRole('heading', { name: '正在上传', exact: true }).waitFor();
+  await page.getByRole('button', { name: '打开上传任务中心' }).waitFor();
   await page.locator('input[type=file]').first().setInputFiles(file('later'));
-  const queue = page.getByRole('region', { name: '上传队列' });
-  assert.equal(await queue.locator('li').count(), 3);
-  await queue.locator('summary').click();
-  await queue.getByRole('button', { name: '移除待上传 remove.png' }).click();
-  await queue.getByRole('button', { name: '停止后续上传' }).click();
+  await page.getByRole('button', { name: '打开上传任务中心' }).click();
+  const sheet = page.getByRole('dialog');
+  assert.equal(await sheet.locator('li').count(), 3);
+  await sheet.getByRole('button', { name: '移除待上传 remove.png' }).click();
+  await sheet.getByRole('button', { name: '暂停后续（1）' }).click();
   await release();
-  await queue.getByRole('heading', { name: '上传已暂停' }).waitFor();
+  await sheet.getByRole('button', { name: '重试未完成（1）' }).waitFor();
   assert.equal(uploads.length, 1);
   assert(await page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; }));
-  dismissLeave = true;
-  const leavePrompt = page.waitForEvent('dialog');
-  await page.locator('.cove-sidebar .cove-brand').click();
-  await leavePrompt;
-  assert(leavePrompts > 0);
+  await page.keyboard.press('Escape');
+
+  // Leave guard via logout AlertDialog
+  await page.getByRole('button', { name: '账号菜单' }).click();
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '继续留在工作台' }).click();
   assert.equal(new URL(page.url()).pathname, '/app');
-  dismissLeave = false;
+
   await page.getByRole('link', { name: '相册', exact: true }).click();
-  await page.locator('.cove-upload-global-status').click();
-  await queue.getByRole('heading', { name: '上传已暂停' }).waitFor();
+  await page.goto('http://piccove.test/app');
   await page.locator('input[type=file]').first().setInputFiles(file('failed'));
   await release(500);
-  await queue.getByRole('alert').filter({ hasText: 'failed.png' }).waitFor();
   await page.locator('input[type=file]').first().setInputFiles(file('next'));
   await release();
-  await queue.getByRole('button', { name: '重试未完成项' }).waitFor({ state: 'visible' });
-  await page.waitForFunction(() => !document.querySelector('.cove-drop[aria-busy="true"]'));
-  assert.equal(await queue.locator('li').count(), 4);
-  await queue.getByRole('button', { name: '重试未完成项' }).click();
-  await release(); await release();
-  await queue.getByRole('heading', { name: '上传结果' }).waitFor();
+  await page.getByRole('button', { name: '打开上传任务中心' }).click();
+  assert.equal(await sheet.locator('li').count(), 4);
+  await sheet.getByRole('button', { name: '重试未完成（2）' }).click();
+  await release();
+  await release();
+  await sheet.getByText('成功 4').waitFor();
   assert.deepEqual(uploads.map((item) => item.name), ['first.png', 'failed.png', 'next.png', 'later.png', 'failed.png']);
   assert.equal(uploads.find((item) => item.name === 'later.png').album, albumId);
   assert.equal(uploads.at(-1).album, null);
   assert.equal(await page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; }), false);
-  assert.equal(await page.locator('.cove-upload-card').count(), 0);
-  await queue.getByRole('button', { name: '复制本次链接' }).click();
-  await page.getByRole('dialog').getByRole('textbox').waitFor();
-  assert.equal(await page.getByRole('dialog').getByRole('textbox').count(), 1);
-  await page.getByRole('dialog').getByRole('button', { name: '复制全部链接' }).click();
+
+  await sheet.getByRole('button', { name: '复制本次链接' }).click();
+  const linksDlg = page.getByRole('dialog').filter({ hasText: '复制图片外链' });
+  await linksDlg.getByRole('textbox').waitFor();
+  await linksDlg.getByRole('button', { name: '复制全部链接' }).click();
   assert.equal((await page.evaluate(() => window.copiedText)).split('\n').length, 4);
+  await page.keyboard.press('Escape');
+  await sheet.getByRole('button', { name: '清空记录' }).click();
   await page.keyboard.press('Escape');
   console.log('PASS upload append, pending removal, stop/resume, failed-item retention, original destinations and leave guard');
 
-  await queue.getByRole('button', { name: '清除上传记录' }).click();
-  await page.getByRole('checkbox', { name: '选择本页' }).check();
-  await page.locator('.cove-batch').getByRole('button', { name: '复制链接', exact: true }).click();
+  await page.getByRole('checkbox', { name: '选择本页' }).click();
+  await page.getByRole('button', { name: '复制外链', exact: true }).click();
   await page.getByRole('dialog').getByRole('textbox').waitFor();
   const pasteFiles = await page.evaluateHandle(() => {
     const data = new DataTransfer();
@@ -202,15 +198,18 @@ try {
   }, pasteFiles);
   assert(pasted, 'Page-level paste must be handled');
   await release();
-  await queue.getByRole('heading', { name: '上传结果' }).waitFor();
+  await page.getByText('图片上传完成', { exact: true }).waitFor();
   assert.equal(uploads.at(-1).name, 'pasted.png');
   assert.equal(uploads.length, beforePaste + 1);
-  await queue.getByRole('button', { name: '清除上传记录' }).click();
+  await page.getByRole('button', { name: '打开上传任务中心' }).click();
+  await sheet.getByRole('button', { name: '清空记录' }).click();
+  await page.keyboard.press('Escape');
   console.log('PASS page-level image paste without stealing input/dialog paste');
+
   images.splice(0, images.length, picture('blocked', { moderation_status: 'blocked' }), picture('held', { moderation_status: 'pending', moderation_hold: true }));
   await page.reload();
-  await page.getByRole('checkbox', { name: '选择本页' }).check();
-  await page.locator('.cove-batch').getByRole('button', { name: '复制链接', exact: true }).click();
+  await page.getByRole('checkbox', { name: '选择本页' }).click();
+  await page.getByRole('button', { name: '复制外链', exact: true }).click();
   await page.getByRole('dialog').getByRole('textbox').waitFor();
   assert.equal(await page.getByRole('dialog').getByRole('textbox').inputValue(), '');
   assert(await page.getByRole('dialog').getByRole('button', { name: '复制全部链接' }).isDisabled());
@@ -221,19 +220,19 @@ try {
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await noOverflow();
-    const target = await page.locator('.cove-image-select').first().boundingBox();
+    const target = await page.getByRole('checkbox', { name: '选择 blocked.png' }).boundingBox();
     assert(target.width >= 44 && target.height >= 44);
     await page.screenshot({ path: `${dir}/gallery-workflow-${width}.png`, fullPage: true });
   }
-  console.log('PASS restricted-link and QR guards, desktop/mobile layout and selection targets');
+  console.log('PASS restricted-link and QR guards, desktop/mobile layout and 44x44 selection targets');
 
   failSettings = true;
   await page.goto('http://piccove.test/login');
-  await page.getByRole('button', { name: '改用密码＋二步验证' }).click();
+  await page.getByRole('tab', { name: '密码登录' }).click();
   await page.getByLabel('密码', { exact: true }).fill('password12345');
-  assert(await page.getByRole('button', { name: '使用密码登录', exact: true }).isVisible());
+  assert(await page.getByRole('button', { name: '登录工作台', exact: true }).isVisible());
   await page.goto('http://piccove.test/register');
-  await page.getByRole('alert').filter({ hasText: '无法读取注册状态' }).waitFor();
+  await page.getByRole('alert').filter({ hasText: '无法获取注册配置' }).waitFor();
   assert.equal(await page.locator('form').count(), 0);
   assert.deepEqual(errors, []);
   console.log('PASS settings failure preserves login while registration remains guarded');

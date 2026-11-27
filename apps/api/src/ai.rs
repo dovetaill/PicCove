@@ -146,10 +146,18 @@ async fn save_config(
         .await
         .map_err(internal)?;
     let old: Config = serde_json::from_value(old).map_err(internal)?;
-    if c.generation.key.is_empty() {
+    if c.generation.key.is_empty()
+        && !c.generation.base_url.is_empty()
+        && c.generation.base_url.trim_end_matches('/')
+            == old.generation.base_url.trim_end_matches('/')
+    {
         c.generation.key = old.generation.key;
     }
-    if c.moderation.key.is_empty() {
+    if c.moderation.key.is_empty()
+        && !c.moderation.base_url.is_empty()
+        && c.moderation.base_url.trim_end_matches('/')
+            == old.moderation.base_url.trim_end_matches('/')
+    {
         c.moderation.key = old.moderation.key;
     }
     if c.moderation_enabled && !configured(&c.moderation) {
@@ -476,6 +484,12 @@ async fn review_step(state: &AppState) -> ApiResult<bool> {
     let r: Option<Review>=sqlx::query_as("UPDATE image_reviews SET status='running',attempts=attempts+1 WHERE id=(SELECT r.id FROM image_reviews r WHERE r.status='pending' AND r.next_attempt<=NOW() ORDER BY r.next_attempt LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,user_id,content_hash,attempts")
         .fetch_optional(&state.pool).await.map_err(internal)?;
     let Some(r) = r else { return Ok(false) };
+    sqlx::query("UPDATE images SET moderation_status='running' WHERE user_id=$1 AND content_hash=$2 AND moderation_status='pending'")
+        .bind(r.user_id)
+        .bind(&r.content_hash)
+        .execute(&state.pool)
+        .await
+        .map_err(internal)?;
     if let Err(error) = process_review(state, &r).await {
         let status = if r.attempts >= 3 { "failed" } else { "pending" };
         let mut tx = state.pool.begin().await.map_err(internal)?;
@@ -502,13 +516,33 @@ pub async fn review_worker(state: Arc<AppState>, mut stop: tokio::sync::watch::R
 async fn reviews(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(page): Query<Page>,
+    Query(query): Query<AdminListQuery>,
 ) -> ApiResult<Json<Value>> {
     administrator(&headers, &state).await?;
-    let rows: Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(r)||jsonb_build_object('username',u.username,'image_id',(SELECT id FROM images i WHERE i.user_id=r.user_id AND i.content_hash=r.content_hash AND i.deleted_at IS NULL LIMIT 1)) FROM image_reviews r JOIN users u ON u.id=r.user_id ORDER BY r.created_at DESC,r.id LIMIT 49 OFFSET $1").bind(offset(page.page)?).fetch_all(&state.pool).await.map_err(internal)?;
-    Ok(Json(
-        json!({"has_more":rows.len()>48,"items":rows.into_iter().take(48).collect::<Vec<_>>()}),
-    ))
+    let start = offset(query.page)?;
+    let status = moderation_filter(query.status.as_deref(), false)?;
+    let q = search_pattern(query.q.as_deref(), None)?;
+    let rows = sqlx::query(
+        r"WITH filtered AS NOT MATERIALIZED (
+              SELECT r.*, u.username FROM image_reviews r JOIN users u ON u.id = r.user_id
+              WHERE ($1::text IS NULL OR r.status = $1)
+                AND ($2::text IS NULL OR u.username ILIKE $2 ESCAPE E'\\' OR r.reason ILIKE $2 ESCAPE E'\\')
+          )
+          SELECT c.total, to_jsonb(p) || jsonb_build_object('image_id', (
+                     SELECT i.id FROM images i WHERE i.user_id = p.user_id
+                       AND i.content_hash = p.content_hash AND i.deleted_at IS NULL LIMIT 1
+                 )) AS item
+          FROM (SELECT COUNT(*) AS total FROM filtered) c
+          LEFT JOIN (SELECT * FROM filtered ORDER BY created_at DESC, id LIMIT 48 OFFSET $3) p ON TRUE
+          ORDER BY p.created_at DESC, p.id",
+    )
+    .bind(status)
+    .bind(q)
+    .bind(start)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+    list_response(&rows, start, |row| row.try_get("item"))
 }
 #[derive(Deserialize)]
 struct Decision {
@@ -1011,6 +1045,34 @@ pub async fn generation_worker(state: Arc<AppState>, mut stop: tokio::sync::watc
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_and_image_status_filters() {
+        for include_image_states in [false, true] {
+            assert_eq!(
+                moderation_filter(Some(" "), include_image_states).unwrap(),
+                None
+            );
+            for status in [
+                "pending", "running", "passed", "blocked", "review", "failed", "exempt",
+            ] {
+                assert_eq!(
+                    moderation_filter(Some(&format!(" {status} ")), include_image_states).unwrap(),
+                    Some(status)
+                );
+            }
+            assert_eq!(
+                moderation_filter(Some("unknown"), include_image_states)
+                    .unwrap_err()
+                    .1,
+                "审核状态筛选无效"
+            );
+        }
+        assert_eq!(
+            moderation_filter(Some("unreviewed"), true).unwrap(),
+            Some("unreviewed")
+        );
+        assert!(moderation_filter(Some("unreviewed"), false).is_err());
+    }
     #[test]
     fn independent_generation_and_legacy_mode() {
         let mut c: Config = serde_json::from_value(json!({})).unwrap();

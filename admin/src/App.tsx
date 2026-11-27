@@ -1,68 +1,105 @@
-import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from 'next-themes';
-import { Toaster } from '@/components/ui/sonner';
-import { Home, Auth } from '@/piccove/public';
 import {
-  Workspace,
-  Gallery,
-  Albums,
-  AccountSettings,
-  UserManagement,
-  RegistrationSettings,
-  AdminOnly,
-} from '@/piccove/workspace';
-import '@/piccove/style.css';
-import { AiChat, ReviewManagement } from '@/piccove/ai';
-const client = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
-const router = createBrowserRouter(createRoutesFromElements(
-          <>
-            <Route path="/" element={<Home />} />
-            <Route path="/login" element={<Auth />} />
-            <Route path="/register" element={<Auth register />} />
-            <Route path="/app" element={<Workspace />}>
-              <Route index element={<Gallery key="own" />} />
-              <Route path="ai" element={<AiChat />} />
-              <Route
-                path="admin/reviews"
-                element={<AdminOnly><ReviewManagement /></AdminOnly>}
-              />
-              <Route path="albums" element={<Albums />} />
-              <Route path="account" element={<AccountSettings />} />
-              <Route
-                path="admin/users"
-                element={
-                  <AdminOnly>
-                    <UserManagement />
-                  </AdminOnly>
-                }
-              />
-              <Route
-                path="admin/images"
-                element={
-                  <AdminOnly>
-                    <Gallery key="all" all />
-                  </AdminOnly>
-                }
-              />
-              <Route
-                path="admin/settings"
-                element={
-                  <AdminOnly>
-                    <RegistrationSettings />
-                  </AdminOnly>
-                }
-              />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </>
-));
+  createBrowserRouter,
+  createRoutesFromElements,
+  Navigate,
+  Route,
+  RouterProvider,
+} from 'react-router-dom';
+import { AdminOnly, AppLayout } from '@/components/layout/app-layout';
+import { Toaster } from '@/components/ui/sonner';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { AccountPage } from '@/features/account/account-page';
+import { AllImagesPage } from '@/features/admin/all-images-page';
+import { AdminOverviewPage } from '@/features/admin/overview-page';
+import { ReviewsPage } from '@/features/admin/reviews-page';
+import { AdminSettingsPage } from '@/features/admin/settings-page';
+import { UsersPage } from '@/features/admin/users-page';
+import { AiStudioPage } from '@/features/ai/ai-studio-page';
+import { AlbumsPage } from '@/features/albums/albums-page';
+import { AuthPage, HomePage } from '@/features/auth/public-pages';
+import { GalleryPage } from '@/features/gallery/gallery-page';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
+const router = createBrowserRouter(
+  createRoutesFromElements(
+    <>
+      <Route path="/" element={<HomePage />} />
+      <Route path="/login" element={<AuthPage />} />
+      <Route path="/register" element={<AuthPage register />} />
+      <Route path="/app" element={<AppLayout />}>
+        <Route index element={<GalleryPage />} />
+        <Route path="albums" element={<AlbumsPage />} />
+        <Route path="ai" element={<AiStudioPage />} />
+        <Route path="account" element={<AccountPage />} />
+        <Route
+          path="admin"
+          element={
+            <AdminOnly>
+              <AdminOverviewPage />
+            </AdminOnly>
+          }
+        />
+        <Route
+          path="admin/reviews"
+          element={
+            <AdminOnly>
+              <ReviewsPage />
+            </AdminOnly>
+          }
+        />
+        <Route
+          path="admin/images"
+          element={
+            <AdminOnly>
+              <AllImagesPage />
+            </AdminOnly>
+          }
+        />
+        <Route
+          path="admin/users"
+          element={
+            <AdminOnly>
+              <UsersPage />
+            </AdminOnly>
+          }
+        />
+        <Route
+          path="admin/settings"
+          element={
+            <AdminOnly>
+              <AdminSettingsPage />
+            </AdminOnly>
+          }
+        />
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </>,
+  ),
+);
+
 export function App() {
   return (
-    <QueryClientProvider client={client}>
-      <ThemeProvider attribute="class" forcedTheme="light">
-        <Toaster position="top-right" theme="light" />
-        <RouterProvider router={router} />
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="light"
+        enableSystem
+        disableTransitionOnChange
+      >
+        <TooltipProvider delayDuration={200}>
+          <Toaster position="top-right" />
+          <RouterProvider router={router} />
+        </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

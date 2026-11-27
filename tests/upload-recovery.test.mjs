@@ -14,11 +14,10 @@ try {
   const bob = '22222222-2222-4222-8222-222222222222';
   const albumId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   let owner = alice, mode = 'auto', commitHeld = false, failLookup = false, failLogout = false, failMe = false;
-  let dismiss = false, prompts = 0, nextId = 1;
+  let nextId = 1;
   const images = [], posts = [], holds = [], lookups = [], errors = [];
   const albums = [{ id: albumId, name: '旅行', description: '' }];
   page.on('pageerror', (error) => errors.push(error.message));
-  page.on('dialog', async (dialog) => { prompts++; if (dismiss) await dialog.dismiss(); else await dialog.accept(); });
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (value) => {
     if (window.denyCopy) throw Error('Clipboard denied'); window.copiedText = value;
   } } }));
@@ -65,102 +64,170 @@ try {
     const file = path.startsWith('/assets/') ? path.slice(1) : 'index.html';
     return route.fulfill({ contentType: file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html', body: await readFile(`${dir}/admin/dist/${file}`) });
   });
+
   const file = (name) => ({ name, mimeType: 'image/png', buffer: Buffer.from(name) });
-  const queue = page.getByRole('region', { name: '上传队列' });
+  const sheet = page.getByRole('dialog');
+  const openSheet = async () => {
+    if (!(await sheet.filter({ hasText: '上传任务中心' }).count())) {
+      await page.getByRole('button', { name: '打开上传任务中心' }).click();
+      await sheet.getByText('上传任务中心').waitFor();
+    }
+  };
   const ready = () => page.getByRole('button', { name: '选择图片', exact: true }).waitFor();
-  const finished = () => queue.getByRole('heading', { name: '上传结果' }).waitFor();
   const waitPosts = async (count) => { for (let n = 0; posts.length < count && n < 300; n++) await new Promise((r) => setTimeout(r, 10)); assert.equal(posts.length, count); };
-  const clear = async () => { await queue.getByRole('button', { name: '清除上传记录' }).click(); await queue.waitFor({ state: 'hidden' }); };
+  const clear = async () => {
+    await openSheet();
+    await sheet.getByRole('button', { name: '清空记录' }).click();
+    await page.keyboard.press('Escape');
+    await page.locator('[role=dialog]').waitFor({ state: 'detached' });
+  };
+
   await page.goto('https://piccove.test/login');
-  await page.getByRole('button', { name: '改用密码＋二步验证' }).click();
+  await page.getByRole('tab', { name: '密码登录' }).click();
   await page.getByLabel('用户名', { exact: true }).fill('tester');
   await page.getByLabel('密码', { exact: true }).fill('password12345');
-  await page.getByRole('button', { name: '使用密码登录', exact: true }).click(); await ready();
+  await page.getByRole('button', { name: '登录工作台', exact: true }).click();
+  await ready();
+
   mode = 'hold';
-  await page.locator('input[type=file]').first().setInputFiles([file('first.png'), file('second.png')]); await waitPosts(1);
-  dismiss = true; await page.goBack();
+  await page.locator('input[type=file]').first().setInputFiles([file('first.png'), file('second.png')]);
+  await waitPosts(1);
+
+  await page.goBack();
+  await page.getByRole('alertdialog').getByRole('button', { name: '继续留在工作台' }).click();
   await page.waitForFunction(() => location.pathname === '/app');
-  assert.equal(await queue.locator('li').count(), 2); assert(prompts > 0);
-  dismiss = false; await page.goBack(); await page.getByRole('heading', { name: '欢迎回到图湾' }).waitFor();
-  await page.goForward(); await ready(); assert.equal(await queue.locator('li').count(), 2);
-  await page.reload(); await ready(); assert.equal(await queue.locator('li').count(), 2); assert.equal(posts.length, 1);
-  mode = 'auto'; await queue.getByRole('button', { name: '重试未完成项' }).click(); await finished();
-  assert.equal(posts.length, 3); assert(lookups.length > 0); await clear();
+
+  await page.goBack();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认离开' }).click();
+  await page.getByRole('heading', { name: '欢迎回到图湾' }).waitFor();
+
+  await page.goForward();
+  await ready();
+  await page.reload();
+  await ready();
+  await openSheet();
+  assert.equal(await sheet.locator('li').count(), 2);
+  assert.equal(posts.length, 1);
+
+  mode = 'auto';
+  await sheet.getByRole('button', { name: '重试未完成（2）' }).click();
+  await sheet.getByText('成功 2').waitFor();
+  assert.equal(posts.length, 3);
+  assert(lookups.length > 0);
+  await clear();
   console.log('PASS back cancel/confirm and refresh restore files; explicit resume reconciles before retry');
 
   mode = 'hold'; commitHeld = true; holds.length = 0;
-  await page.locator('input[type=file]').first().setInputFiles(file('lost-response.png')); await waitPosts(4);
-  await page.reload(); await ready(); failLookup = true;
-  await queue.getByRole('button', { name: '重试未完成项' }).click();
-  await queue.getByRole('alert').filter({ hasText: '暂时无法核对' }).waitFor(); assert.equal(posts.length, 4);
+  await page.locator('input[type=file]').first().setInputFiles(file('lost-response.png'));
+  await waitPosts(4);
+  await page.reload();
+  await ready();
+  failLookup = true;
+  await openSheet();
+  await sheet.getByRole('button', { name: '重试未完成（1）' }).click();
+  await sheet.getByText(/暂时无法核对上次上传状态/).waitFor();
+  assert.equal(posts.length, 4);
   failLookup = false; mode = 'auto';
-  await queue.getByRole('button', { name: '重试未完成项' }).click(); await finished(); assert.equal(posts.length, 4);
-  await clear(); console.log('PASS lost response finds committed image without reposting; lookup failure retains recovery');
+  await sheet.getByRole('button', { name: '重试未完成（1）' }).click();
+  await sheet.getByText('已存在 1').waitFor();
+  assert.equal(posts.length, 4);
+  await clear();
+  console.log('PASS lost response finds committed image without reposting; lookup failure retains recovery');
 
   mode = 'hold'; commitHeld = false; holds.length = 0;
-  await page.locator('input[type=file]').first().setInputFiles(file('alice-only.png')); await waitPosts(5);
-  owner = bob; await page.reload(); await ready(); assert.equal(await queue.count(), 0);
-  owner = alice; await page.reload(); await ready(); assert.equal(await queue.locator('li').count(), 1);
-  owner = bob; mode = 'auto'; await queue.getByRole('button', { name: '重试未完成项' }).click();
-  await queue.waitFor({ state: 'hidden' }); assert.equal(posts.length, 5);
-  owner = alice; await page.reload(); await ready(); await clear();
+  await page.locator('input[type=file]').first().setInputFiles(file('alice-only.png'));
+  await waitPosts(5);
+  owner = bob; await page.reload(); await ready();
+  assert.equal(await page.getByRole('button', { name: '打开上传任务中心' }).count(), 0);
+  owner = alice; await page.reload(); await ready();
+  await openSheet();
+  assert.equal(await sheet.locator('li').count(), 1);
+  owner = bob; mode = 'auto';
+  await sheet.getByRole('button', { name: '重试未完成（1）' }).click();
+  await sheet.getByText('失败 1').waitFor();
+  assert.equal(posts.length, 5);
+  await page.keyboard.press('Escape');
+  owner = alice; await page.reload(); await ready();
+  await clear();
   console.log('PASS persisted queues and outgoing uploads remain scoped to the original account');
 
   mode = 'hold'; holds.length = 0; failLogout = true;
-  await page.locator('input[type=file]').first().setInputFiles(file('logout-fails.png')); await waitPosts(6);
+  await page.locator('input[type=file]').first().setInputFiles(file('logout-fails.png'));
+  await waitPosts(6);
+  await page.getByRole('button', { name: '账号菜单' }).click();
   await page.getByRole('button', { name: '退出登录' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认离开' }).click();
   await page.getByText('退出失败', { exact: true }).waitFor();
-  await queue.getByRole('button', { name: '重试未完成项' }).waitFor();
-  mode = 'auto'; await queue.getByRole('button', { name: '重试未完成项' }).click(); await finished(); await clear(); failLogout = false;
+  await openSheet();
+  mode = 'auto';
+  await sheet.getByRole('button', { name: '重试未完成（1）' }).click();
+  await sheet.getByText('成功 1').waitFor();
+  await clear();
+  failLogout = false;
   console.log('PASS failed logout leaves a resumable queue');
 
-  await page.getByRole('checkbox', { name: '选择 first.png', exact: true }).check();
-  await page.getByRole('combobox', { name: '上传到相册' }).click(); await page.getByRole('option', { name: '旅行', exact: true }).click();
-  assert.equal(new URL(page.url()).search, ''); assert(await page.getByRole('checkbox', { name: '选择 first.png', exact: true }).isChecked());
-  await page.locator('input[type=file]').first().setInputFiles(file('first.png')); await finished();
-  await queue.getByText('重复图片保留原名称、公开状态和相册。展开上传明细可查看原位置，或移入目标相册。').waitFor();
+  await page.getByRole('checkbox', { name: '选择 first.png', exact: true }).click();
+  await page.getByRole('combobox', { name: '上传到相册' }).click();
+  await page.getByRole('option', { name: '旅行', exact: true }).click();
+  assert.equal(new URL(page.url()).search, '');
+  assert.equal(await page.getByRole('checkbox', { name: '选择 first.png', exact: true }).getAttribute('aria-checked'), 'true');
+  await page.locator('input[type=file]').first().setInputFiles(file('first.png'));
+  await page.getByText('图片上传完成', { exact: true }).waitFor();
   assert.equal(images.find((item) => item.original_name === 'first.png').album_id, null);
-  await queue.locator('summary').click(); await queue.getByRole('button', { name: '移入「旅行」' }).click();
-  await page.getByText('已移入目标相册，原图和外链已保留', { exact: true }).waitFor();
+  await openSheet();
+  await sheet.getByRole('button', { name: '移入「旅行」' }).click();
+  await page.getByText('已移入目标相册', { exact: true }).waitFor();
   assert.equal(images.find((item) => item.original_name === 'first.png').album_id, albumId);
+  await clear();
   console.log('PASS upload destination preserves selection; duplicate keeps location until explicit move');
 
-  const first = images.find((item) => item.original_name === 'first.png'); first.moderation_status = 'pending'; first.moderation_hold = true;
-  await clear(); await page.locator('input[type=file]').first().setInputFiles(file('first.png')); await finished();
+  const first = images.find((item) => item.original_name === 'first.png');
+  first.moderation_status = 'pending'; first.moderation_hold = true;
+  await page.locator('input[type=file]').first().setInputFiles(file('first.png'));
+  await page.getByText('图片上传完成', { exact: true }).waitFor();
   albums.push({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: '空相册', description: '' });
-  await page.getByRole('link', { name: '相册', exact: true }).click(); await page.getByRole('link', { name: '打开相册 空相册', exact: true }).click();
-  await queue.getByRole('button', { name: '复制本次链接' }).click();
-  await page.getByRole('textbox', { name: '批量图片链接' }).waitFor();
-  assert(await page.getByRole('button', { name: '复制全部链接' }).isDisabled());
-  await page.getByRole('combobox', { name: '批量链接格式' }).click();
+  await page.getByRole('link', { name: '相册', exact: true }).click();
+  await page.getByRole('link', { name: '打开相册 空相册', exact: true }).click();
+  await openSheet();
+  await sheet.getByRole('button', { name: '复制本次链接' }).click();
+  const linksDlg = page.getByRole('dialog').filter({ hasText: '复制图片外链' });
+  await linksDlg.getByRole('textbox', { name: '批量图片链接' }).waitFor();
+  assert(await linksDlg.getByRole('button', { name: '复制全部链接' }).isDisabled());
+  await linksDlg.getByRole('combobox', { name: '外链格式' }).click();
   await page.getByRole('option', { name: 'HTML 外链', exact: true }).click();
   first.moderation_status = 'passed';
   await page.waitForFunction(() => document.querySelector('textarea[aria-label="批量图片链接"]')?.value.startsWith('<img'));
-  assert.equal(await page.getByRole('textbox', { name: '批量图片链接' }).inputValue(), `<img src="${first.url}" alt="first.png" />`);
-  await page.keyboard.press('Escape'); await page.locator('[role=dialog]').waitFor({ state: 'detached' });
+  assert.equal(await linksDlg.getByRole('textbox', { name: '批量图片链接' }).inputValue(), `<img src="${first.url}" alt="first.png" />`);
+  await page.keyboard.press('Escape');
   await page.evaluate(() => { window.denyCopy = true; });
-  await queue.locator('summary').click(); await queue.getByRole('button', { name: '复制上传结果 first.png' }).click();
-  await page.getByRole('textbox', { name: '批量图片链接' }).waitFor();
-  assert.equal(await page.getByRole('textbox', { name: '批量图片链接' }).inputValue(), first.url);
-  await page.keyboard.press('Escape'); await page.locator('[role=dialog]').waitFor({ state: 'detached' });
+  await sheet.getByRole('button', { name: '复制上传结果 first.png' }).click();
+  await linksDlg.getByRole('textbox', { name: '批量图片链接' }).waitFor();
+  assert.equal(await linksDlg.getByRole('textbox', { name: '批量图片链接' }).inputValue(), first.url);
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page.locator('[role=dialog]').waitFor({ state: 'detached' });
   console.log('PASS sharing refreshes off-page moderation and clipboard failure opens selectable links');
 
   albums[0].name = 'W'.repeat(100); albums[0].description = 'Z'.repeat(500);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`https://piccove.test/app?album=${albumId}`); await ready();
+  await page.goto(`https://piccove.test/app?album=${albumId}`);
+  await ready();
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  await page.goto('https://piccove.test/app/albums'); await page.getByRole('button', { name: '创建相册', exact: true }).click();
-  await page.getByRole('dialog').waitFor(); await page.setViewportSize({ width: 390, height: 320 });
+  await page.goto('https://piccove.test/app/albums');
+  await page.getByRole('button', { name: '创建相册', exact: true }).click();
+  await page.getByRole('dialog').waitFor();
+  await page.setViewportSize({ width: 390, height: 320 });
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: '创建相册', exact: true }).scrollIntoViewIfNeeded();
-  const save = await dialog.getByRole('button', { name: '创建相册', exact: true }).boundingBox(); assert(save.y >= 0 && save.y + save.height <= 320);
+  const save = await dialog.getByRole('button', { name: '创建相册', exact: true }).boundingBox();
+  assert(save.y >= 0 && save.y + save.height <= 320);
   await dialog.getByRole('button', { name: 'Close' }).scrollIntoViewIfNeeded();
-  const close = await dialog.getByRole('button', { name: 'Close' }).boundingBox(); assert(close.y >= 0 && close.y + close.height <= 320);
+  const close = await dialog.getByRole('button', { name: 'Close' }).boundingBox();
+  assert(close.y >= 0 && close.y + close.height <= 320);
   console.log('PASS long names wrap at 390px and all album dialog actions remain reachable at 390x320');
 
   const broken = await browser.newPage();
   await broken.addInitScript(() => Object.defineProperty(window, 'indexedDB', { get() { throw Error('Storage unavailable'); } }));
-  // Reuse only mocked responses, never connect to a deployed host.
   await broken.route('**/*', async (route) => {
     const u = new URL(route.request().url()); if (u.hostname !== 'piccove.test') return route.abort();
     if (u.pathname === '/api/v1/me') return route.fulfill({ json: { user: { id: bob, username: 'tester', is_admin: false, quota_bytes: 10000 }, used_bytes: 0 } });
@@ -169,31 +236,51 @@ try {
     const file = u.pathname.startsWith('/assets/') ? u.pathname.slice(1) : 'index.html';
     return route.fulfill({ contentType: file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html', body: await readFile(`${dir}/admin/dist/${file}`) });
   });
-  await broken.goto('https://piccove.test/app'); await broken.getByRole('alert').filter({ hasText: '无法读取本地上传记录' }).waitFor();
+  await broken.goto('https://piccove.test/app');
+  await broken.getByRole('alert').filter({ hasText: '浏览器本地队列不可用' }).waitFor();
   await broken.getByRole('button', { name: '选择图片', exact: true }).waitFor();
   await broken.locator('input[type=file]').first().setInputFiles(file('fallback.png'));
-  await broken.getByRole('heading', { name: '上传结果' }).waitFor(); await broken.close();
+  await broken.getByText('图片上传完成', { exact: true }).waitFor();
+  await broken.close();
+
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.keyboard.press('Escape'); await page.locator('[role=dialog]').waitFor({ state: 'detached' });
-  await page.goto('https://piccove.test/app'); await ready(); await clear();
+  await page.keyboard.press('Escape');
+  await page.locator('[role=dialog]').waitFor({ state: 'detached' });
+  await page.goto('https://piccove.test/app');
+  await ready();
+  await clear();
   mode = 'hold'; holds.length = 0;
   await page.addInitScript(() => { IDBObjectStore.prototype.add = function () { throw new DOMException('Full', 'QuotaExceededError'); }; });
-  await page.reload(); await ready();
+  await page.reload();
+  await ready();
   const beforeQuota = posts.length;
-  await page.locator('input[type=file]').first().setInputFiles(file('quota-fallback.png')); await waitPosts(beforeQuota + 1);
-  await page.getByRole('alert').filter({ hasText: '本地上传记录未能保存' }).waitFor();
-  dismiss = true; const leave = page.waitForEvent('dialog'); await page.locator('.cove-brand').click();
-  assert((await leave).message().includes('本地保存不可用')); assert.equal(new URL(page.url()).pathname, '/app'); dismiss = false;
-  failMe = true; const meFailure = page.waitForResponse((response) => response.url().endsWith('/api/v1/me') && response.status() === 503);
+  await page.locator('input[type=file]').first().setInputFiles(file('quota-fallback.png'));
+  await waitPosts(beforeQuota + 1);
+  await page.getByRole('alert').filter({ hasText: '本地队列空间不足' }).waitFor();
+
+  await page.getByRole('button', { name: '账号菜单' }).click();
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await page.getByRole('alertdialog').filter({ hasText: '本地队列保存不可用' }).waitFor();
+  await page.getByRole('alertdialog').getByRole('button', { name: '继续留在工作台' }).click();
+  assert.equal(new URL(page.url()).pathname, '/app');
+
+  failMe = true;
+  const meFailure = page.waitForResponse((response) => response.url().endsWith('/api/v1/me') && response.status() === 503);
   await page.evaluate(() => {
     let visibility = 'hidden';
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
     window.dispatchEvent(new Event('visibilitychange'));
     visibility = 'visible'; window.dispatchEvent(new Event('visibilitychange'));
-  }); await (await meFailure).finished();
+  });
+  await (await meFailure).finished();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  assert.equal(await queue.count(), 1); assert(await page.getByRole('heading', { name: '正在上传', exact: true }).isVisible());
-  failMe = false; await holds.shift()(); await finished();
+  assert.equal(await page.getByRole('button', { name: '打开上传任务中心' }).count(), 1);
+  failMe = false;
+  await holds.shift()();
+  await page.getByText('图片上传完成', { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log('PASS local read/write failures preserve normal upload, leaving warns truthfully, background account failures do not abort upload');
-} finally { await browser.close(); console.log('Recovery browser closed; no listening port was started.'); }
+} finally {
+  await browser.close();
+  console.log('Recovery browser closed; no listening port was started.');
+}

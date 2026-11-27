@@ -120,7 +120,10 @@ summary = request(alice, '/albums')[0]
 assert summary['image_count'] == 1 and summary['cover_id'] is None
 sql(f"UPDATE images SET deleted_at=NULL,moderation_status='passed',moderation_hold=FALSE WHERE id IN ('{private_id}','{public_id}')")
 
-request(alice, f'/images/{public_id}', 'PATCH', {'original_name': '改名.png', 'album_id': None}, 204)
+request(alice, f'/images/{public_id}', 'PATCH', {'original_name': '改名.png'}, 204)
+assert request(alice, f'/images?ids={public_id}')['items'][0]['album_id'] == album_id
+request(alice, f'/images/{public_id}', 'PATCH', {'album_id': None}, 204)
+assert request(alice, f'/images?ids={public_id}')['items'][0]['original_name'] == '改名.png'
 assert request(alice, '/albums')[0]['image_count'] == 1
 listed = request(alice, '/images')['items']
 assert next(item for item in listed if item['id'] == public_id)['url'] == public['url']
