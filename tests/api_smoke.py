@@ -68,13 +68,13 @@ for name in ['alice', 'bobby']:
 a = login(alice, 'alice')
 b = login(bob, 'bobby')
 request(alice, '/api/v1/admin/users', expected=403)
-for endpoint in ['/admin/storage', '/admin/system']:
+for endpoint in ['/storage-locations', '/admin/system']:
     request(alice, '/api/v1' + endpoint, expected=403)
     request(anonymous, '/api/v1' + endpoint, expected=401)
-request(alice, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/data/uploads'}, 403)
+request(alice, '/api/v1/storage-locations', 'POST', {'path': '/data/uploads'}, 403)
 request(alice, '/api/v1/admin/system/restart', 'POST', expected=403)
-request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '../bad'}, 400)
-request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/does-not-exist-piccove-test'}, 400)
+request(admin, '/api/v1/storage-locations', 'POST', {'path': '../bad'}, 400)
+request(admin, '/api/v1/storage-locations', 'POST', {'path': '/does-not-exist-piccove-test'}, 400)
 deadline = time.monotonic() + 10
 while True:
     system = request(admin, '/api/v1/admin/system')
@@ -83,7 +83,8 @@ while True:
         break
     assert time.monotonic() < deadline, system['manager_error']
     time.sleep(0.2)
-original_storage = request(admin, '/api/v1/admin/storage')['upload_dir']
+locations = request(admin, '/api/v1/storage-locations')['items']
+assert [(item['path'], item['default']) for item in locations] == [('/data/uploads', True)]
 request(alice, '/api/v1/images?all=true', expected=403)
 request(alice, '/api/v1/settings', 'PATCH', {'registration_open': True}, 403)
 request(admin, '/api/v1/settings', 'PATCH', {'registration_open': True}, 204)
@@ -110,7 +111,7 @@ assert request(anonymous, public_path, raw=True) == pixels
 dated_path = urlsplit(image['url']).path
 assert re.fullmatch(r'/i/\d{4}/\d{2}/\d{2}/[0-9a-f-]+\.png', dated_path)
 assert request(anonymous, dated_path, raw=True) == pixels
-request(admin, '/api/v1/admin/storage', 'PATCH', {'upload_dir': '/data'}, 400)
+request(admin, '/api/v1/storage-locations', 'POST', {'path': '/data'}, 400)
 assert image['is_public'] is True
 assert request(anonymous, '/api/v1/settings')['private_images'] is True
 private_pixels = png()
@@ -171,9 +172,9 @@ request(bob, '/api/v1/me', expected=401)
 request(anonymous, '/i/00000000-0000-0000-0000-000000000000', expected=404)
 request(anonymous, '/api/v1/images?page=0', expected=401)
 for attempt in range(21):
-    # Existing login attempts count toward the same IP limit; accept either until it is saturated.
+    # Distinct accounts exercise the shared IP bucket even with per-account failure limits.
     try:
-        request(anonymous, '/api/v1/auth/login', 'POST', {'username': 'missing', 'password': PASSWORD}, 401)
+        request(anonymous, '/api/v1/auth/login', 'POST', {'username': f'missing-{attempt}', 'password': PASSWORD}, 401)
     except AssertionError as error:
         assert error.args[0][2] == 429
         break

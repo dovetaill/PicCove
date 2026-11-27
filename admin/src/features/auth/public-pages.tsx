@@ -219,9 +219,14 @@ export function AuthPage({ register = false }: { register?: boolean }) {
   const settings = useSettings();
   const navigate = useNavigate();
   const client = useQueryClient();
+  const isIpHost =
+    typeof window !== 'undefined' &&
+    /^(?:\d{1,3}\.){3}\d{1,3}$|^\[/.test(window.location.hostname);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [method, setMethod] = useState<'passkey' | 'password'>('passkey');
+  const [method, setMethod] = useState<'passkey' | 'password'>(
+    isIpHost ? 'password' : 'passkey',
+  );
   const [agreed, setAgreed] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -318,7 +323,7 @@ export function AuthPage({ register = false }: { register?: boolean }) {
                 required
                 minLength={3}
                 maxLength={32}
-                pattern={register ? '^[A-Za-z0-9_-]{3,32}$' : undefined}
+                pattern={register ? '[A-Za-z0-9_\\-]{3,32}' : undefined}
                 title={register ? '3–32 位字母、数字、下划线或连字符' : undefined}
                 autoComplete="username"
                 placeholder="3–32 位字母、数字、下划线或连字符"
@@ -343,7 +348,7 @@ export function AuthPage({ register = false }: { register?: boolean }) {
             {!register && method === 'password' && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="auth-code">动态验证码</Label>
+                  <Label htmlFor="auth-code">二步验证码 / 恢复码</Label>
                   <span className="text-xs text-muted-foreground">
                     开启二步验证时填写
                   </span>
@@ -351,10 +356,9 @@ export function AuthPage({ register = false }: { register?: boolean }) {
                 <Input
                   id="auth-code"
                   name="code"
-                  inputMode="numeric"
                   autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder="6 位数字验证码"
+                  maxLength={16}
+                  placeholder="6 位动态码或 XXXX-XXXX 恢复码"
                   className="font-mono tracking-widest"
                 />
               </div>

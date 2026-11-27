@@ -9,6 +9,7 @@ export type User = {
   violation_count: number;
   moderation_exempt: boolean;
   content_ban: 'auto' | 'manual' | null;
+  totp_enabled?: boolean;
   created_at?: string;
 };
 
@@ -172,6 +173,31 @@ export type ReleaseCheck = {
   url: string;
 };
 
+export type ApiTokenItem = {
+  id: string;
+  name: string;
+  default_album_id: string | null;
+  default_public: boolean;
+  last_used_at: string | null;
+  created_at: string;
+};
+
+export type CreatedApiToken = ApiTokenItem & {
+  token: string;
+};
+
+export type ImageShareItem = {
+  id: string;
+  url: string;
+  expires_at: string;
+  created_at: string;
+};
+
+export type BatchImageResult = {
+  processed: number;
+  skipped: number;
+};
+
 export const LINK_FORMATS = [
   ['url', '图片地址（直链）'],
   ['markdown', 'Markdown 外链'],
@@ -300,7 +326,7 @@ export function sharingProblem(image: Picture): string | null {
     ['pending', 'running', 'failed'].includes(image.moderation_status)
   )
     return '图片尚未通过审核，暂不能公开分享';
-  if (!image.is_public) return '当前为私有图片，设为公开后即可分享外链';
+  if (!image.is_public) return '这是私有图片，设为公开后即可分享外链';
   return null;
 }
 

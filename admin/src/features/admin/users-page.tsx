@@ -97,6 +97,7 @@ export function UsersPage() {
   const [disabledFlag, setDisabledFlag] = useState(false);
   const [resetPassword, setResetPassword] = useState('');
   const [confirmBanToggle, setConfirmBanToggle] = useState(false);
+  const [confirmReset2fa, setConfirmReset2fa] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const client = useQueryClient();
@@ -249,6 +250,21 @@ export function UsersPage() {
       ]);
       toast.success(command === 'ban' ? '已执行内容封禁' : '已解除内容封禁');
       setConfirmBanToggle(false);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleResetUser2fa() {
+    if (!editingAccount || busy) return;
+    setBusy(true);
+    try {
+      await api(`/admin/users/${editingAccount.user.id}/reset-2fa`, 'POST');
+      await client.invalidateQueries({ queryKey: ['users'] });
+      toast.success('已清除该用户的二步验证并下线旧会话');
+      setConfirmReset2fa(false);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -535,7 +551,7 @@ export function UsersPage() {
                 required
                 minLength={3}
                 maxLength={32}
-                pattern="^[A-Za-z0-9_-]{3,32}$"
+                pattern="[A-Za-z0-9_\-]{3,32}"
                 title="3–32 位字母、数字、下划线或连字符"
                 autoComplete="off"
                 placeholder="3–32 位字母、数字、下划线或连字符"
@@ -711,6 +727,28 @@ export function UsersPage() {
                     />
                   </div>
 
+                  {!editingAccount.user.is_admin &&
+                    editingAccount.user.totp_enabled && (
+                      <div className="rounded-xl border border-border p-3.5 flex items-center justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <p className="text-sm font-medium text-mono">
+                            二步验证器（已开启）
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            用户丢失手机或恢复码时可协助清除 2FA
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => setConfirmReset2fa(true)}
+                        >
+                          重置二步验证
+                        </Button>
+                      </div>
+                    )}
+
                   {!editingAccount.user.is_admin && (
                     <div className="rounded-xl border border-border p-3.5 flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
@@ -777,6 +815,32 @@ export function UsersPage() {
               }}
             >
               确认执行
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmReset2fa} onOpenChange={setConfirmReset2fa}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              重置「{editingAccount?.user.username}」的二步验证？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              将清除该账号的 TOTP 验证器与恢复码，并强制下线其全部已登录设备。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={busy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleResetUser2fa();
+              }}
+            >
+              确认重置 2FA
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

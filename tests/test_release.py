@@ -69,5 +69,16 @@ class ReleaseTests(unittest.TestCase):
                     publish.publish(root, tag, 'dovetaill/PicCove', 'abc')
             self.assertFalse(any(c[:3] == ['gh', 'release', 'edit'] for c in calls))
 
+    def test_release_docs_whitelist_excludes_site_private_and_audit_docs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stage_docs = Path(folder) / 'docs'
+            release.copy_release_docs(ROOT, stage_docs)
+            self.assertTrue((stage_docs / 'OPERATIONS.md').is_file())
+            self.assertTrue((stage_docs / 'BACKUP.md').is_file())
+            self.assertFalse((stage_docs / 'DEPLOY-tu.jpggg.com.md').exists())
+            self.assertFalse((stage_docs / 'ARCHITECTURE.md').exists())
+            self.assertFalse((stage_docs / 'ui-redesign').exists())
+            self.assertFalse((stage_docs / 'system-audit').exists())
+
 if __name__ == '__main__':
     unittest.main()

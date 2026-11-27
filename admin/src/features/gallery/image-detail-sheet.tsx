@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  Clock,
   Copy,
   ExternalLink,
   Globe,
@@ -41,6 +42,7 @@ import {
   size,
   useMe,
   type Album,
+  type ImageShareItem,
   type Picture,
 } from '@/lib/api';
 import { formatDateTime } from '@/lib/utils';
@@ -69,16 +71,73 @@ export function ImageDetailSheet({
   const [albumId, setAlbumId] = useState('none');
   const [saving, setSaving] = useState(false);
   const [togglingPublic, setTogglingPublic] = useState(false);
+  const [shareTtl, setShareTtl] = useState('24');
+  const [creatingShare, setCreatingShare] = useState(false);
+  const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
+  const [sharesExpanded, setSharesExpanded] = useState(false);
 
   useEffect(() => {
     if (picture) {
       setName(picture.original_name);
       setAlbumId(picture.album_id || 'none');
+      setSharesExpanded(false);
     }
   }, [picture]);
 
   const isOwner = !!picture && picture.user_id === me.data?.user.id;
   const problem = picture ? sharingProblem(picture) : null;
+  const canTempShare =
+    isOwner &&
+    !!picture &&
+    !picture.deleted_at &&
+    !['blocked', 'review'].includes(picture.moderation_status) &&
+    !(
+      picture.moderation_hold &&
+      ['pending', 'running', 'failed'].includes(picture.moderation_status)
+    );
+
+  const shares = useQuery({
+    queryKey: ['image-shares', picture?.id],
+    queryFn: () => api<ImageShareItem[]>(`/images/${picture!.id}/shares`),
+    enabled: canTempShare && sharesExpanded,
+  });
+
+  async function handleCreateTempShare() {
+    if (!picture || creatingShare) return;
+    setCreatingShare(true);
+    try {
+      const created = await api<ImageShareItem>(
+        `/images/${picture.id}/shares`,
+        'POST',
+        { ttl_hours: Number(shareTtl) },
+      );
+      setSharesExpanded(true);
+      await client.invalidateQueries({
+        queryKey: ['image-shares', picture.id],
+      });
+      await copyTextToClipboard(created.url, '临时分享链接已生成并复制');
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setCreatingShare(false);
+    }
+  }
+
+  async function handleRevokeShare(shareId: string) {
+    if (!picture || revokingShareId) return;
+    setRevokingShareId(shareId);
+    try {
+      await api(`/images/${picture.id}/shares/${shareId}`, 'DELETE');
+      await client.invalidateQueries({
+        queryKey: ['image-shares', picture.id],
+      });
+      toast.success('临时链接已撤销');
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setRevokingShareId(null);
+    }
+  }
 
   async function handleSaveMeta(e: FormEvent) {
     e.preventDefault();
@@ -352,6 +411,112 @@ export function ImageDetailSheet({
                   </div>
                 )}
               </div>
+
+              {/* Temporary Expiring Share Section (Stage 4D) */}
+              {canTempShare && (
+                <div className="space-y-3 border-t border-border pt-5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                      <Clock className="size-3.5" />
+                      临时分享（到期自动失效）
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setSharesExpanded((v) => !v)}
+                    >
+                      {sharesExpanded ? '收起记录' : '查看已有记录'}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    无需将私有图片永久公开，可生成随时可撤销的限时访问外链。
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Select value={shareTtl} onValueChange={setShareTtl}>
+                      <SelectTrigger
+                        aria-label="临时链接有效期"
+                        size="sm"
+                        className="w-[120px]"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 小时</SelectItem>
+                        <SelectItem value="24">24 小时</SelectItem>
+                        <SelectItem value="168">7 天</SelectItem>
+                        <SelectItem value="720">30 天</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      disabled={creatingShare}
+                      onClick={() => void handleCreateTempShare()}
+                    >
+                      <Copy />
+                      {creatingShare ? '生成中…' : '生成并复制临时链'}
+                    </Button>
+                  </div>
+
+                  {sharesExpanded && (
+                    <div className="space-y-2 pt-1">
+                      {shares.isPending ? (
+                        <p className="text-xs text-muted-foreground">
+                          正在加载临时链接记录…
+                        </p>
+                      ) : !shares.data?.length ? (
+                        <p className="text-xs text-muted-foreground">
+                          当前没有生效中的临时链接
+                        </p>
+                      ) : (
+                        shares.data.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-2 text-xs"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="font-mono truncate">{item.url}</p>
+                              <p className="text-[11px] text-muted-foreground tabular-nums">
+                                有效至 {formatDateTime(item.expires_at)}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2"
+                                onClick={() =>
+                                  void copyTextToClipboard(
+                                    item.url,
+                                    '临时链接已复制',
+                                  )
+                                }
+                              >
+                                复制
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-destructive hover:text-destructive"
+                                disabled={revokingShareId === item.id}
+                                onClick={() => void handleRevokeShare(item.id)}
+                              >
+                                撤销
+                              </Button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Footer Actions */}
               <div className="flex items-center justify-between gap-2 border-t border-border pt-5">

@@ -61,7 +61,7 @@ pub async fn migrate(
     if input.source_id == input.target_id {
         return Err(bad("源目录与目标目录不能相同"));
     }
-    let _guard = state.uploads.lock().await;
+    let _guard = state.storage_write.lock().await;
     let source = storage::by_id(&state, input.source_id).await?;
     let target = storage::by_id(&state, input.target_id).await?;
     source.open()?;
@@ -98,7 +98,6 @@ pub async fn retry(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     administrator(&headers, &state).await?;
-    let _guard = state.uploads.lock().await;
     let mut tx = state.pool.begin().await.map_err(internal)?;
     let changed =
         sqlx::query("UPDATE file_jobs SET status='queued' WHERE id=$1 AND status='failed'")
@@ -125,7 +124,6 @@ pub async fn cleanup(
     Path(parent): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     administrator(&headers, &state).await?;
-    let _guard = state.uploads.lock().await;
     let original = job(&state, parent).await?;
     let done: bool = sqlx::query_scalar(
         "SELECT status='completed' AND kind='migration' FROM file_jobs WHERE id=$1",
@@ -213,7 +211,6 @@ pub async fn import(
         }
     }
     let id = Uuid::new_v4();
-    let _guard = state.uploads.lock().await;
     let mut tx = state.pool.begin().await.map_err(internal)?;
     let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND NOT disabled) AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM albums WHERE id=$2 AND user_id=$1))").bind(input.user_id).bind(input.album_id).fetch_one(&mut *tx).await.map_err(internal)?;
     if !valid {
@@ -236,16 +233,18 @@ pub async fn import(
     Ok(Json(serde_json::json!({"id":id})))
 }
 async fn process(state: &AppState, j: &Job, item: &Item) -> ApiResult<()> {
-    let current: Option<ImageRow> = sqlx::query_as("SELECT * FROM images WHERE id=$1")
-        .bind(item.image_id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(internal)?;
+    let current =
+        sqlx::query_as::<_, ImageRow>("SELECT * FROM images WHERE id=$1").bind(item.image_id);
     if j.kind == "import" {
-        if let Some(row) = current {
+        if let Some(row) = current
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(internal)?
+        {
             if row.deleted_at.is_none() {
                 return Ok(());
             }
+            let _write = state.storage_write.lock().await;
             remove_file_record(state, &row).await?;
         }
         let root = state
@@ -262,16 +261,18 @@ async fn process(state: &AppState, j: &Job, item: &Item) -> ApiResult<()> {
             return Err(bad("源文件已变化，请重新扫描后创建导入任务"));
         }
         let user = j.user_id.ok_or_else(|| bad("任务缺少用户"))?;
+        let (bytes, checked) = validate_image(Bytes::from(bytes), false).await?;
         let import_key = storage::hash(
             format!(
                 "{}\0{}\0{}\0{}",
                 state.import_dir.as_ref().unwrap().path,
                 item.source_key,
                 user,
-                storage::hash(&bytes)
+                checked.hash
             )
             .as_bytes(),
         );
+        let _write = state.storage_write.lock().await;
         let existing: Option<ImageRow> = sqlx::query_as("SELECT * FROM images WHERE import_key=$1")
             .bind(&import_key)
             .fetch_optional(&state.pool)
@@ -300,11 +301,13 @@ async fn process(state: &AppState, j: &Job, item: &Item) -> ApiResult<()> {
                         .chars()
                         .take(200)
                         .collect(),
-                    Bytes::from(bytes),
+                    bytes,
+                    checked,
                     j.is_public,
                     j.album_id,
                     item.image_id,
                     Some(import_key),
+                    None,
                 )
                 .await?
             }
@@ -317,6 +320,11 @@ async fn process(state: &AppState, j: &Job, item: &Item) -> ApiResult<()> {
             .map_err(internal)?;
         return Ok(());
     }
+    let _write = state.storage_write.lock().await;
+    let current = current
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(internal)?;
     let source = storage::by_id(state, j.source_id.ok_or_else(|| bad("任务缺少源存储"))?).await?;
     let target = storage::by_id(state, j.target_id.ok_or_else(|| bad("任务缺少目标存储"))?).await?;
     let Some(row) = current.filter(|r| r.deleted_at.is_none()) else {
@@ -430,7 +438,6 @@ pub async fn worker(
     Ok(())
 }
 async fn step(state: &AppState) -> ApiResult<bool> {
-    let _guard = state.uploads.lock().await;
     let j:Option<Job>=sqlx::query_as("SELECT * FROM file_jobs WHERE status IN ('queued','running') ORDER BY created_at,id LIMIT 1").fetch_optional(&state.pool).await.map_err(internal)?;
     let Some(j) = j else { return Ok(false) };
     sqlx::query("UPDATE file_jobs SET status='running' WHERE id=$1")

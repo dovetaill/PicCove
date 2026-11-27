@@ -116,6 +116,15 @@ impl Directory {
         }
         Ok((bytes, signature(&after)))
     }
+    pub fn read_original(&self, key: &str) -> ApiResult<Vec<u8>> {
+        self.read(key).map(|(bytes, _)| bytes).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                missing()
+            } else {
+                io_bad(e)
+            }
+        })
+    }
     pub fn write_new(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
         let (parent, name) = self.parent(key, true)?;
         let mut file = open_at(
@@ -123,9 +132,16 @@ impl Directory {
             &name,
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         )?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        parent.sync_all()
+        let result = file
+            .write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| parent.sync_all());
+        if result.is_err() {
+            if let Err(e) = self.remove(key) {
+                tracing::warn!(key, error=%e, "failed to remove partially written file");
+            }
+        }
+        result
     }
     pub fn remove(&self, key: &str) -> std::io::Result<()> {
         let (parent, name) = match self.parent(key, false) {
@@ -373,26 +389,34 @@ pub async fn list(
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
     administrator(&headers, &state).await?;
-    let current = current(&state).await?;
-    let rows: Vec<Location> =
-        sqlx::query_as("SELECT * FROM storage_locations ORDER BY created_at,id")
-            .fetch_all(&state.pool)
-            .await
-            .map_err(internal)?;
+    let rows = sqlx::query(
+        "SELECT l.*, l.path = COALESCE(s.upload_dir, $1) AS is_default,
+                COALESCE(usage.count, 0) AS count, COALESCE(usage.used_bytes, 0) AS used_bytes
+         FROM storage_locations l CROSS JOIN settings s
+         LEFT JOIN (SELECT storage_root, COUNT(*) AS count, SUM(size_bytes)::bigint AS used_bytes
+                    FROM images WHERE deleted_at IS NULL GROUP BY storage_root) usage
+           ON usage.storage_root = l.path ORDER BY l.created_at,l.id",
+    )
+    .bind(state.upload_dir.to_str().unwrap())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
     let mut result = Vec::new();
-    for row in rows {
-        let (count, used): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*),COALESCE(SUM(size_bytes),0)::bigint FROM images WHERE storage_root=$1",
-        )
-        .bind(&row.path)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(internal)?;
+    let mut has_default = false;
+    for record in rows {
+        let row = Location::from_row(&record).map_err(internal)?;
+        let count: i64 = record.try_get("count").map_err(internal)?;
+        let used: i64 = record.try_get("used_bytes").map_err(internal)?;
+        let default: bool = record.try_get("is_default").map_err(internal)?;
+        has_default |= default;
         let (available, error) = match row.open().and_then(|d| d.available().map_err(io_bad)) {
             Ok(n) => (Some(n), None),
             Err(e) => (None, Some(e.1)),
         };
-        result.push(serde_json::json!({"id":row.id,"path":row.path,"default":row.id==current.id,"count":count,"used_bytes":used,"available_bytes":available,"error":error}));
+        result.push(serde_json::json!({"id":row.id,"path":row.path,"default":default,"count":count,"used_bytes":used,"available_bytes":available,"error":error}));
+    }
+    if !has_default {
+        return Err(bad("存储未登记"));
     }
     Ok(Json(
         serde_json::json!({"items":result,"allowed_roots":state.storage_roots}),
@@ -415,7 +439,7 @@ pub async fn add(
     let dir = Directory::open(&path).map_err(io_bad)?;
     dir.probe().map_err(io_bad)?;
     let identity = dir.identity().map_err(io_bad)?;
-    let _guard = state.uploads.lock().await;
+    let _guard = state.storage_write.lock().await;
     // Overlapping roots make migration and cleanup ambiguous.
     let roots: Vec<String> = sqlx::query_scalar("SELECT path FROM storage_locations")
         .fetch_all(&state.pool)
@@ -449,7 +473,7 @@ pub async fn select(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     administrator(&headers, &state).await?;
-    let _guard = state.uploads.lock().await;
+    let _guard = state.storage_write.lock().await;
     let row = by_id(&state, id).await?;
     row.open()?.probe().map_err(io_bad)?;
     sqlx::query("UPDATE settings SET upload_dir=$1")
@@ -462,7 +486,7 @@ pub async fn select(
 pub async fn read_image(state: &AppState, row: &ImageRow) -> ApiResult<Vec<u8>> {
     let location = image_location(state, row).await?;
     let key = row.storage_key.clone();
-    tokio::task::spawn_blocking(move || location.open()?.read(&key).map(|v| v.0).map_err(io_bad))
+    tokio::task::spawn_blocking(move || location.open()?.read_original(&key))
         .await
         .map_err(internal)?
 }
@@ -487,6 +511,10 @@ mod tests {
         assert!(dir.lock().is_err());
         assert!(!temp.path().join("other").exists());
         assert!(dir.write_new("../escape", b"x").is_err());
+        assert_eq!(
+            dir.read_original("absent/image.png").unwrap_err().0,
+            StatusCode::NOT_FOUND
+        );
         std::os::unix::fs::symlink("/tmp", temp.path().join("link")).unwrap();
         assert!(dir.write_new("link/escape", b"x").is_err());
         dir.copy_verified("2026/10/a.png", b"original", id).unwrap();
@@ -496,6 +524,8 @@ mod tests {
             .is_err());
         assert_eq!(dir.read("2026/10/a.png").unwrap().0, b"original");
         dir.write_new("unfinished.part", b"x").unwrap();
+        assert!(dir.write_new("unfinished.part", b"replacement").is_err());
+        assert_eq!(dir.read_original("unfinished.part").unwrap(), b"x");
         assert_eq!(dir.scan().unwrap().len(), 1);
         let location = Location {
             id,

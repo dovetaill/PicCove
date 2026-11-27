@@ -5,6 +5,7 @@ import {
   ArrowRight,
   CloudUpload,
   Copy,
+  Eraser,
   FolderInput,
   FolderOutput,
   FolderPlus,
@@ -87,6 +88,7 @@ import {
   size,
   useMe,
   type Album,
+  type BatchImageResult,
   type Page,
   type Picture,
 } from '@/lib/api';
@@ -110,6 +112,7 @@ export function GalleryPage() {
   );
   const [uploadAlbum, setUploadAlbum] = useState(albumParam);
   const [uploadPrivate, setUploadPrivate] = useState(false);
+  const [uploadStripMeta, setUploadStripMeta] = useState(false);
   const [picking, setPicking] = useState(false);
   const [dragging, setDragging] = useState(false);
 
@@ -170,8 +173,9 @@ export function GalleryPage() {
       albumParam,
     );
 
+  const ownerId = me.data?.user.id || '';
   const albums = useQuery({
-    queryKey: ['albums'],
+    queryKey: ['albums', ownerId],
     queryFn: () => api<Album[]>('/albums'),
   });
 
@@ -192,6 +196,7 @@ export function GalleryPage() {
   const images = useQuery({
     queryKey: [
       'images',
+      ownerId,
       false,
       picking ? 'all' : albumParam,
       page,
@@ -244,6 +249,25 @@ export function GalleryPage() {
     }
   }, [images.isPending, images.isFetching, images.isError, items.length, page]);
 
+  function handleFilesUpload(files: FileList | File[]) {
+    if (busyAction) {
+      toast.info('当前操作处理中，请稍候');
+      return;
+    }
+    if (invalidUploadAlbum) {
+      toast.error('目标相册不存在，请重新选择上传相册');
+      return;
+    }
+    if (uploadAlbum !== 'all' && (!albums.isSuccess || albums.isFetching)) {
+      toast.error('正在读取相册信息，请稍候');
+      return;
+    }
+    upload(files, uploadAlbum, uploadPrivate, uploadStripMeta);
+  }
+
+  const uploadHandlerRef = useRef(handleFilesUpload);
+  uploadHandlerRef.current = handleFilesUpload;
+
   useEffect(() => {
     if (picking) return;
     const onPaste = (event: ClipboardEvent) => {
@@ -261,27 +285,11 @@ export function GalleryPage() {
       )
         return;
       event.preventDefault();
-      handleFilesUpload(event.clipboardData.files);
+      uploadHandlerRef.current(event.clipboardData.files);
     };
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
-  });
-
-  function handleFilesUpload(files: FileList | File[]) {
-    if (busyAction) {
-      toast.info('当前操作处理中，请稍候');
-      return;
-    }
-    if (invalidUploadAlbum) {
-      toast.error('目标相册不存在，请重新选择上传相册');
-      return;
-    }
-    if (uploadAlbum !== 'all' && (!albums.isSuccess || albums.isFetching)) {
-      toast.error('正在读取相册信息，请稍候');
-      return;
-    }
-    upload(files, uploadAlbum, uploadPrivate);
-  }
+  }, [picking]);
 
   async function handleDirectCopy(picture: Picture) {
     try {
@@ -320,16 +328,30 @@ export function GalleryPage() {
 
   async function handleBatchVisibility(nextPublic: boolean) {
     if (!chosen.length || busyAction) return;
+    const targets = chosen.filter(
+      (item) => !item.deleted_at && item.is_public !== nextPublic,
+    );
+    if (!targets.length) {
+      setSelected([]);
+      return;
+    }
     setBusyAction(true);
     let updatedCount = 0;
     try {
-      for (const item of chosen) {
-        if (item.deleted_at || item.is_public === nextPublic) continue;
-        await api(`/images/${item.id}/visibility`, 'PATCH', {
+      if (targets.length > 1) {
+        const res = await api<BatchImageResult>('/images/batch', 'POST', {
+          ids: targets.map((item) => item.id),
+          action: 'visibility',
           is_public: nextPublic,
         });
-        updatedCount++;
+        updatedCount = res.processed;
+      } else {
+        await api(`/images/${targets[0].id}/visibility`, 'PATCH', {
+          is_public: nextPublic,
+        });
+        updatedCount = 1;
       }
+      updateImages(targets.map((item) => ({ ...item, is_public: nextPublic })));
       await Promise.all([
         client.invalidateQueries({ queryKey: ['images'] }),
         client.invalidateQueries({ queryKey: ['admin-overview'] }),
@@ -354,13 +376,24 @@ export function GalleryPage() {
     let moved = 0;
     try {
       const targetAlbum = destination === 'none' ? null : destination;
-      for (const item of pictures) {
-        await api(`/images/${item.id}`, 'PATCH', {
+      if (pictures.length >= 3) {
+        const res = await api<BatchImageResult>('/images/batch', 'POST', {
+          ids: pictures.map((item) => item.id),
+          action: 'move',
           album_id: targetAlbum,
         });
-        updateImages([{ ...item, album_id: targetAlbum }]);
-        moved++;
-        setSelected((ids) => ids.filter((id) => id !== item.id));
+        moved = res.processed;
+        updateImages(pictures.map((item) => ({ ...item, album_id: targetAlbum })));
+        setSelected([]);
+      } else {
+        for (const item of pictures) {
+          await api(`/images/${item.id}`, 'PATCH', {
+            album_id: targetAlbum,
+          });
+          updateImages([{ ...item, album_id: targetAlbum }]);
+          moved++;
+          setSelected((ids) => ids.filter((id) => id !== item.id));
+        }
       }
       await Promise.all([
         client.invalidateQueries({ queryKey: ['images'] }),
@@ -393,18 +426,33 @@ export function GalleryPage() {
     if (!deleting.length || busyAction) return;
     setBusyAction(true);
     try {
-      for (const item of deleting) {
-        try {
-          await api(`/images/${item.id}`, 'DELETE');
+      if (deleting.length > 1) {
+        await api<BatchImageResult>('/images/batch', 'POST', {
+          ids: deleting.map((item) => item.id),
+          action: 'delete',
+        });
+        for (const item of deleting) {
           removeImage(item.id);
-        } catch (err) {
-          if (!(err instanceof ApiError && [401, 403].includes(err.status))) {
-            removeImage(item.id);
-          }
-          throw err;
+          if (inspecting?.id === item.id) setInspecting(null);
         }
-        if (inspecting?.id === item.id) setInspecting(null);
-        setDeleting((curr) => curr.filter((r) => r.id !== item.id));
+        setDeleting([]);
+      } else {
+        for (const item of deleting) {
+          try {
+            await api(`/images/${item.id}`, 'DELETE');
+            removeImage(item.id);
+          } catch (err) {
+            if (
+              err instanceof ApiError &&
+              (err.status === 404 || err.status >= 500)
+            ) {
+              removeImage(item.id);
+            }
+            throw err;
+          }
+          if (inspecting?.id === item.id) setInspecting(null);
+          setDeleting((curr) => curr.filter((r) => r.id !== item.id));
+        }
       }
       setSelected([]);
       await Promise.all([
@@ -651,6 +699,23 @@ export function GalleryPage() {
                   私有
                 </button>
               </div>
+
+              <button
+                type="button"
+                aria-pressed={uploadStripMeta}
+                disabled={busyAction}
+                onClick={() => setUploadStripMeta((v) => !v)}
+                title="上传时自动清除 JPEG/PNG/WebP 的 EXIF 拍摄信息与 GPS 定位元数据"
+                className={cn(
+                  'cursor-pointer inline-flex h-7 items-center gap-1 rounded-md border px-2.5 text-xs font-medium transition-colors',
+                  uploadStripMeta
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-input bg-muted/40 text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <Eraser className="size-3" />
+                去隐私信息
+              </button>
 
               <Button
                 size="sm"

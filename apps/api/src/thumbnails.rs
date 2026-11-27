@@ -23,13 +23,6 @@ pub async fn serve(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
-    let _permit = state
-        .thumbnails
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(internal)?;
-    let _guard = state.uploads.lock().await;
     let row: ImageRow = sqlx::query_as("SELECT * FROM images WHERE id=$1 AND deleted_at IS NULL")
         .bind(id)
         .fetch_optional(&state.pool)
@@ -37,34 +30,58 @@ pub async fn serve(
         .map_err(internal)?
         .ok_or_else(missing)?;
     ai::authorize_image(&state, &headers, &row).await?;
-    let location = storage::image_location(&state, &row).await?;
-    let bytes = tokio::task::spawn_blocking(move || {
+    cached_image(
+        &headers,
+        format!("\"thumb-{id}\""),
+        "image/png",
+        load(&state, row),
+    )
+    .await
+}
+async fn load(state: &AppState, row: ImageRow) -> ApiResult<Vec<u8>> {
+    let _permit = state.thumbnails.acquire().await.map_err(internal)?;
+    let id = row.id;
+    let location = storage::image_location(state, &row).await?;
+    let (bytes, cache) = tokio::task::spawn_blocking(move || {
         let dir = location.open()?;
         let key = key(id);
         match dir.read(&key) {
-            Ok((bytes, _)) => return Ok(bytes),
+            Ok((bytes, _)) => return Ok((bytes, None)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
             Err(e) => return Err(storage::io_error(e)),
         }
-        let original = dir.read(&row.storage_key).map_err(storage::io_error)?.0;
+        let original = dir.read_original(&row.storage_key)?;
         let bytes = render(&original)?;
-        if dir.available().map_err(storage::io_error)? > DISK_RESERVE + bytes.len() as u64 {
-            dir.copy_verified(&key, &bytes, id)
-                .map_err(storage::io_error)?;
-        }
-        Ok(bytes)
+        let space = dir.available().map_err(storage::io_error)? > DISK_RESERVE + bytes.len() as u64;
+        Ok((bytes, space.then_some(dir)))
     })
     .await
     .map_err(internal)??;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/png"),
-            (header::CACHE_CONTROL, "no-store"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
-        bytes,
-    )
-        .into_response())
+    if let Some(dir) = cache {
+        let _write = state.storage_write.lock().await;
+        let live: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM images WHERE id=$1 AND deleted_at IS NULL AND storage_root IS NOT DISTINCT FROM $2)",
+        )
+        .bind(id)
+        .bind(&row.storage_root)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(internal)?;
+        if live {
+            let cached = bytes.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                match dir.copy_verified(&key(id), &cached, id) {
+                    Ok(()) => (),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+                    Err(e) => {
+                        tracing::warn!(image_id = %id, error = %e, "thumbnail cache write skipped")
+                    }
+                }
+            })
+            .await;
+        }
+    }
+    Ok(bytes)
 }
 #[cfg(test)]
 mod tests {

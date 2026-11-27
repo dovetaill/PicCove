@@ -80,6 +80,7 @@ import {
   reviewBadgeVariant,
   sharingProblem,
   size,
+  type BatchImageResult,
   type Page,
   type Picture,
 } from '@/lib/api';
@@ -197,18 +198,33 @@ export function AllImagesPage() {
     if (!deleting.length || busyDelete) return;
     setBusyDelete(true);
     try {
-      for (const item of deleting) {
-        try {
-          await api(`/images/${item.id}`, 'DELETE');
+      if (deleting.length > 1) {
+        await api<BatchImageResult>('/images/batch', 'POST', {
+          ids: deleting.map((item) => item.id),
+          action: 'delete',
+        });
+        for (const item of deleting) {
           removeImage(item.id);
-        } catch (err) {
-          if (!(err instanceof ApiError && [401, 403].includes(err.status))) {
-            removeImage(item.id);
-          }
-          throw err;
+          if (inspecting?.id === item.id) setInspecting(null);
         }
-        if (inspecting?.id === item.id) setInspecting(null);
-        setDeleting((curr) => curr.filter((r) => r.id !== item.id));
+        setDeleting([]);
+      } else {
+        for (const item of deleting) {
+          try {
+            await api(`/images/${item.id}`, 'DELETE');
+            removeImage(item.id);
+          } catch (err) {
+            if (
+              err instanceof ApiError &&
+              (err.status === 404 || err.status >= 500)
+            ) {
+              removeImage(item.id);
+            }
+            throw err;
+          }
+          if (inspecting?.id === item.id) setInspecting(null);
+          setDeleting((curr) => curr.filter((r) => r.id !== item.id));
+        }
       }
       setSelected([]);
       await Promise.all([

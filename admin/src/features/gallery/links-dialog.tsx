@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Globe, RefreshCw } from 'lucide-react';
+import { Clock, Copy, Globe, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { Alert, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,7 @@ import {
   LINK_FORMATS,
   sharingProblem,
   useMe,
+  type ImageShareItem,
   type Picture,
 } from '@/lib/api';
 
@@ -52,8 +53,15 @@ export function LinksDialog({
 }) {
   const [format, setFormat] = useState<string>('url');
   const [publishing, setPublishing] = useState(false);
+  const [creatingTemp, setCreatingTemp] = useState(false);
+  const [tempShareUrl, setTempShareUrl] = useState<string>('');
   const me = useMe();
   const client = useQueryClient();
+
+  useEffect(() => {
+    setFormat('url');
+    setTempShareUrl('');
+  }, [pictures]);
 
   const query = useQuery({
     queryKey: ['image-links', all, pictures.map((item) => item.id)],
@@ -105,9 +113,31 @@ export function LinksDialog({
     }
   }
 
+  async function createQuickTempShare(item: Picture) {
+    setCreatingTemp(true);
+    try {
+      const created = await api<ImageShareItem>(
+        `/images/${item.id}/shares`,
+        'POST',
+        { ttl_hours: 24 },
+      );
+      setTempShareUrl(created.url);
+      await client.invalidateQueries({ queryKey: ['image-shares', item.id] });
+      await copyTextToClipboard(created.url, '24 小时临时链接已复制');
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setCreatingTemp(false);
+    }
+  }
+
+  if (pictures.length === 0) {
+    return null;
+  }
+
   return (
     <Dialog
-      open={pictures.length > 0}
+      open
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
@@ -177,18 +207,47 @@ export function LinksDialog({
                 <div className="flex flex-wrap items-center justify-between gap-2 w-full">
                   <AlertTitle>{singleProblem}</AlertTitle>
                   {canMakePublic && (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={publishing}
-                      onClick={() => void publishAndCopy(singleItem)}
-                    >
-                      <Globe />
-                      {publishing ? '正在公开…' : '设为公开并复制'}
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={creatingTemp || publishing}
+                        onClick={() => void createQuickTempShare(singleItem)}
+                      >
+                        <Clock />
+                        {creatingTemp ? '生成中…' : '生成 24h 临时链接'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={publishing || creatingTemp}
+                        onClick={() => void publishAndCopy(singleItem)}
+                      >
+                        <Globe />
+                        {publishing ? '正在公开…' : '设为公开并复制'}
+                      </Button>
+                    </div>
                   )}
                 </div>
               </Alert>
+            )}
+
+            {tempShareUrl && (
+              <div className="flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-xs">
+                <code className="flex-1 font-mono truncate select-all">
+                  {tempShareUrl}
+                </code>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    void copyTextToClipboard(tempShareUrl, '临时链接已复制')
+                  }
+                >
+                  <Copy />
+                  复制
+                </Button>
+              </div>
             )}
 
             {!singleItem && skippedCount > 0 && (

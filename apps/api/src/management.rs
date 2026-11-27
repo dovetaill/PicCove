@@ -1,43 +1,6 @@
 use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub async fn storage(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> ApiResult<Json<serde_json::Value>> {
-    administrator(&headers, &state).await?;
-    let path: Option<String> = sqlx::query_scalar("SELECT upload_dir FROM settings")
-        .fetch_one(&state.pool)
-        .await
-        .map_err(internal)?;
-    Ok(Json(
-        serde_json::json!({"upload_dir": path.unwrap_or_else(|| state.upload_dir.to_string_lossy().into_owned())}),
-    ))
-}
-
-#[derive(Deserialize)]
-pub struct StorageInput {
-    upload_dir: String,
-}
-
-pub async fn set_storage(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(input): Json<StorageInput>,
-) -> ApiResult<StatusCode> {
-    administrator(&headers, &state).await?;
-    let _guard = state.uploads.lock().await;
-    let location = storage::location(&state, input.upload_dir.trim()).await?;
-    location.open()?.probe().map_err(storage::io_error)?;
-    let path = PathBuf::from(location.path);
-    sqlx::query("UPDATE settings SET upload_dir=$1")
-        .bind(path.to_string_lossy().as_ref())
-        .execute(&state.pool)
-        .await
-        .map_err(internal)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 async fn control(action: &str) -> ApiResult<serde_json::Value> {
     let path =
         env::var("PICCOVE_CONTROL_SOCKET").unwrap_or_else(|_| "/run/piccove/control.sock".into());
@@ -74,13 +37,10 @@ pub async fn check(
 ) -> ApiResult<Json<serde_json::Value>> {
     administrator(&headers, &state).await?;
     rate(&state, "release-check".into(), 10, 60).await?;
-    let response = reqwest::Client::builder()
-        .https_only(true)
-        .timeout(std::time::Duration::from_secs(20))
-        .user_agent("PicCove")
-        .build()
-        .map_err(internal)?
+    let response = state
+        .http
         .get("https://api.github.com/repos/dovetaill/PicCove/releases/latest")
+        .timeout(Duration::from_secs(20))
         .send()
         .await
         .map_err(|_| bad("无法连接 GitHub，请稍后重试"))?

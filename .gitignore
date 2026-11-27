@@ -11,6 +11,7 @@ uploads/
 *.tsbuildinfo
 .DS_Store
 
+artifacts/
 release-output/
 .gradle/
 apps/android/**/build/

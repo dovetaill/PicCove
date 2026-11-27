@@ -17,6 +17,18 @@ TARGET = 'x86_64-unknown-linux-musl'
 VERSION_RE = r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
 
 
+PUBLIC_DOCS = ('OPERATIONS.md', 'BACKUP.md', 'ANDROID.md', 'VERIFICATION.md', 'ROADMAP.md')
+
+
+def copy_release_docs(root, stage_docs):
+    stage_docs.mkdir(parents=True, exist_ok=True)
+    for doc_name in PUBLIC_DOCS:
+        if (root / 'docs' / doc_name).is_file():
+            shutil.copy2(root / 'docs' / doc_name, stage_docs / doc_name)
+    if (root / 'docs/screenshots').is_dir():
+        shutil.copytree(root / 'docs/screenshots', stage_docs / 'screenshots')
+
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -118,7 +130,7 @@ def build(output, work_parent, tag=None):
         shutil.copy2(ROOT / 'scripts/install-server.sh', stage / 'install.sh')
         shutil.copy2(ROOT / 'piccove.sh', stage / 'piccove.sh')
         shutil.copy2(ROOT / 'README.md', stage / 'README.md')
-        shutil.copytree(ROOT / 'docs', stage / 'docs')
+        copy_release_docs(ROOT, stage / 'docs')
         commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
         dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT))
         require(not tag or not dirty, '正式 tag 构建要求工作区干净。')

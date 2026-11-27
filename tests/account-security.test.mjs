@@ -94,14 +94,22 @@ try {
 
   const secret = (await request('/me/totp/start', { current_password: password })).secret;
   await request('/me/totp/confirm', { current_password: password, code: 'invalid' }, 400);
-  await request('/me/totp/confirm', { current_password: password, code: code(secret, -1) }, 204);
-  assert.equal((await request('/me/security')).totp_enabled, true);
+  const confirmed = await request('/me/totp/confirm', { current_password: password, code: code(secret, -1) }, 200);
+  assert.equal(confirmed.recovery_codes.length, 8);
+  const secAfterBind = await request('/me/security');
+  assert.equal(secAfterBind.totp_enabled, true);
+  assert.equal(secAfterBind.recovery_remaining, 8);
   await request('/auth/logout', {}, 204);
   await request('/auth/login', { username: 'renamed_admin', password }, 400);
   const currentCode = code(secret);
   await request('/auth/login', { username: 'renamed_admin', password, code: currentCode });
   await request('/auth/login', { username: 'renamed_admin', password, code: currentCode }, 400);
   await request('/auth/logout', {}, 204);
+  const recoveryCode = confirmed.recovery_codes[0];
+  await request('/auth/login', { username: 'renamed_admin', password, code: recoveryCode.toLowerCase() });
+  assert.equal((await request('/me/security')).recovery_remaining, 7);
+  await request('/auth/logout', {}, 204);
+  await request('/auth/login', { username: 'renamed_admin', password, code: recoveryCode }, 400);
 
   await page.goto(`${origin}/login`);
   await page.locator('[name=username]').fill('renamed_admin');

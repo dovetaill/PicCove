@@ -153,7 +153,7 @@ public class MainActivity extends Activity {
         EditText server=field("服务器 · https://img.example.com",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
         EditText username=field("用户名",InputType.TYPE_CLASS_TEXT);
         EditText password=field("密码",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        EditText code=field("动态验证码（已开启二步验证时必填）",InputType.TYPE_CLASS_NUMBER);
+        EditText code=field("二步验证码或恢复码（开启时必填）",InputType.TYPE_CLASS_TEXT);
         server.setText(getPreferences(0).getString("server","")); username.setText(getPreferences(0).getString("username",""));
         content.addView(server); content.addView(username); content.addView(password); content.addView(code);
         content.addView(button("连接并登录", () -> {
@@ -212,7 +212,7 @@ public class MainActivity extends Activity {
                 image.setContentDescription("打开照片 "+photo.optString("original_name"));
                 card.addView(image,new LinearLayout.LayoutParams(-1,dp(160)));loadImage(image,photo,384);
                 TextView name=text(photo.optString("original_name"),14,INK);name.setSingleLine();name.setEllipsize(android.text.TextUtils.TruncateAt.END);card.addView(name);
-                card.addView(text(photo.optBoolean("is_public")?"公开分享中":"私有照片",12,MUTED));
+                card.addView(text(photoLabel(photo),12,MUTED));
                 card.setOnClickListener(v->{if(!busy)showPhoto(photo);});image.setOnClickListener(v->{if(!busy)showPhoto(photo);});
             }
         }
@@ -221,14 +221,37 @@ public class MainActivity extends Activity {
         paging.addView(text("第 "+page+" 页",14,MUTED),new LinearLayout.LayoutParams(0,-2,1));
         Button next=button("下一页",()->{page++;refresh();});next.setEnabled(hasMore);paging.addView(next);content.addView(paging);
     }
+    private boolean isRestricted(JSONObject photo) {
+        String mod=photo.optString("moderation_status","");
+        JSONObject user=account==null?null:account.optJSONObject("user");
+        boolean isAdmin=user!=null&&user.optBoolean("is_admin",false);
+        return !isAdmin&&("blocked".equals(mod)||"review".equals(mod));
+    }
+    private String photoLabel(JSONObject photo) {
+        String mod=photo.optString("moderation_status","");
+        if("blocked".equals(mod)) return "违规受限";
+        if("review".equals(mod)) return "待人工复核";
+        if(photo.optBoolean("moderation_hold")&&("pending".equals(mod)||"running".equals(mod)||"failed".equals(mod))) return "审核确认中";
+        return photo.optBoolean("is_public")?"公开分享中":"私有照片";
+    }
     private void loadImage(ImageView view, JSONObject photo, int maxDimension) {
-        // shortcut: previews download originals; add authenticated thumbnails for larger libraries.
+        if(isRestricted(photo)) {
+            view.setContentDescription(photo.optString("moderation_reason","受审核限制"));
+            return;
+        }
         int screen=generation;
         ApiClient client=api;
         images.execute(()->{
             if(screen!=generation||isDestroyed())return;
             try {
-                byte[] bytes=client.image(photo.getString("id"));
+                String id=photo.getString("id");
+                byte[] bytes;
+                if(maxDimension<=480) {
+                    try { bytes=client.thumbnail(id); }
+                    catch(ApiClient.ApiException ex) { if(ex.status==404) bytes=client.image(id); else throw ex; }
+                } else {
+                    bytes=client.image(id);
+                }
                 BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;
                 BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
                 options.inSampleSize=1;
@@ -241,16 +264,18 @@ public class MainActivity extends Activity {
         });
     }
     private void showPhoto(JSONObject photo) {
-        shell(photo.optString("original_name"),photo.optBoolean("is_public")?"公开 · 持有链接即可访问":"私有 · 本人及管理员可见",false);
+        shell(photo.optString("original_name"),photoLabel(photo)+" · "+(photo.optBoolean("is_public")?"持有链接即可访问":"本人及管理员可见"),false);
         detail=true;
         content.addView(button("‹ 返回相册",this::showPhotos));
         ImageView image=new ImageView(this);image.setAdjustViewBounds(true);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
         image.setContentDescription(photo.optString("original_name"));content.addView(image,new LinearLayout.LayoutParams(-1,dp(320)));loadImage(image,photo,2048);
         content.addView(text(photo.optInt("width")+" × "+photo.optInt("height")+"  ·  "+size(photo.optLong("size_bytes")),13,MUTED));
         content.addView(button("修改名称",()->prompt("修改名称",photo.optString("original_name"),name ->
-            perform("正在保存…",()->api.json("PATCH","/images/"+photo.getString("id"),new JSONObject().put("original_name",name).put("album_id",photo.opt("album_id"))),this::refresh))));
+            perform("正在保存…",()->api.json("PATCH","/images/"+photo.getString("id"),new JSONObject().put("original_name",name)),this::refresh))));
         content.addView(button("移入相册",()->movePhoto(photo)));
-        content.addView(button(photo.optBoolean("is_public")?"分享公开链接":"公开并分享",()->{
+        String mod=photo.optString("moderation_status","");
+        boolean shareBlocked="blocked".equals(mod)||"review".equals(mod)||(photo.optBoolean("moderation_hold")&&("pending".equals(mod)||"running".equals(mod)||"failed".equals(mod)));
+        if(!shareBlocked) content.addView(button(photo.optBoolean("is_public")?"分享公开链接":"公开并分享",()->{
             if(photo.optBoolean("is_public")) share(photo);
             else new AlertDialog.Builder(this).setTitle("公开这张照片？").setMessage("任何持有链接的人都能查看。之后可停止分享，但无法撤回已被他人保存的副本。")
                 .setNegativeButton("取消",null).setPositiveButton("公开并分享",(d,w)->perform("正在开启分享…",()->api.json("PATCH","/images/"+photo.getString("id")+"/visibility",new JSONObject().put("is_public",true)),()->{
@@ -267,13 +292,13 @@ public class MainActivity extends Activity {
     }
     private void share(JSONObject photo) {
         Intent intent=new Intent(Intent.ACTION_SEND);intent.setType("text/plain");
-        intent.putExtra(Intent.EXTRA_TEXT,api.origin+"/i/"+photo.optString("id"));
+        intent.putExtra(Intent.EXTRA_TEXT,photo.optString("url",api.origin+"/i/"+photo.optString("id")));
         startActivity(Intent.createChooser(intent,"分享照片链接"));
     }
     private void movePhoto(JSONObject photo) {
         String[] names=new String[albums.size()+1];names[0]="不放入相册";
         for(int i=0;i<albums.size();i++)names[i+1]=albums.get(i).optString("name");
-        new AlertDialog.Builder(this).setTitle("选择相册").setItems(names,(d,which)->perform("正在移动…",()->api.json("PATCH","/images/"+photo.getString("id"),new JSONObject().put("original_name",photo.getString("original_name")).put("album_id",which==0?JSONObject.NULL:albums.get(which-1).getString("id"))),this::refresh)).show();
+        new AlertDialog.Builder(this).setTitle("选择相册").setItems(names,(d,which)->perform("正在移动…",()->api.json("PATCH","/images/"+photo.getString("id"),new JSONObject().put("album_id",which==0?JSONObject.NULL:albums.get(which-1).getString("id"))),this::refresh)).show();
     }
     interface TextAction { void run(String value); }
     private void prompt(String title,String value,TextAction action) {
@@ -335,12 +360,10 @@ public class MainActivity extends Activity {
                     try(InputStream stream=getContentResolver().openInputStream(uri)) {
                         if(stream==null)throw new Exception("无法读取照片");bytes=ApiClient.readLimited(stream,ApiClient.MAX_IMAGE);
                     }
-                    JSONObject photo=api.upload(name==null?"photo":name,bytes);saved[0]++;
+                    JSONObject photo=api.upload(name==null?"photo":name,bytes,destination);saved[0]++;
                     if(photo.optBoolean("duplicate")) {
                         reused.add(name+"：已复用“"+photo.getString("original_name")+"”，保留原相册；"+(photo.getBoolean("is_public")?"原图片仍公开，持有链接即可访问。":"原图片仍为私有。"));
-                    } else if(destination!=null)try {
-                        api.json("PATCH","/images/"+photo.getString("id"),new JSONObject().put("original_name",photo.getString("original_name")).put("album_id",destination));
-                    } catch(Exception e) {failures.add(name+"：已上传到全部照片，移入相册失败");}
+                    }
                 }catch(Exception e){failures.add(name+"："+e.getMessage());}
                 final int done=i+1;runOnUiThread(()->{if(!isDestroyed())progress("正在上传 "+done+" / "+selected.size());});
             }

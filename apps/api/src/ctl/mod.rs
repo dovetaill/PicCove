@@ -1,3 +1,5 @@
+#[path = "../account.rs"]
+mod account;
 mod service;
 mod terminal;
 mod web;
@@ -39,6 +41,7 @@ const LEGACY_FILES: [(&str, &str); 2] = [
 #[derive(Default)]
 struct Args {
     action: String,
+    username: String,
     directory: PathBuf,
     archive: Option<PathBuf>,
     version: Option<String>,
@@ -61,11 +64,15 @@ impl Args {
         let mut words = words.peekable();
         let mut seen = BTreeSet::new();
         while let Some(word) = words.next() {
-            ensure!(seen.insert(word.clone()), "重复参数：{word}");
+            if word.starts_with('-') {
+                ensure!(seen.insert(word.clone()), "重复参数：{word}");
+            }
             match word.as_str() {
                 "--help" | "-h" => result.action = "help".into(),
                 "--non-interactive" | "--yes" => result.yes = true,
-                "--directory" => result.directory = words.next().context("缺少安装目录")?.into(),
+                "--directory" | "--install-dir" => {
+                    result.directory = words.next().context("缺少安装目录")?.into()
+                }
                 "--archive" => {
                     result.archive = Some(words.next().context("缺少发行包路径")?.into())
                 }
@@ -76,6 +83,18 @@ impl Args {
                 "--contact" => result.contact = words.next().context("缺少联系地址")?,
                 "--backup" => result.backup = Some(words.next().context("缺少备份目录")?.into()),
                 _ if !word.starts_with('-') && result.action.is_empty() => result.action = word,
+                _ if result.action == "reset-2fa" && result.username.is_empty() => {
+                    let name = if word == "--" {
+                        words.next().context("缺少要重置的用户名")?
+                    } else {
+                        word
+                    };
+                    ensure!(
+                        account::valid_username(&name),
+                        "用户名须为 3–32 位字母、数字、下划线或连字符"
+                    );
+                    result.username = name;
+                }
                 _ => bail!("不支持的参数：{word}"),
             }
         }
@@ -94,11 +113,23 @@ impl Args {
                 "logs",
                 "health",
                 "backup",
-                "web-manager"
+                "web-manager",
+                "reset-2fa"
             ]
             .contains(&result.action.as_str()),
             "未知操作"
         );
+        ensure!(
+            result.action != "reset-2fa" || !result.username.is_empty(),
+            "缺少要重置的用户名"
+        );
+        if seen.contains("--install-dir") {
+            ensure!(
+                result.action == "reset-2fa",
+                "--install-dir 仅用于 reset-2fa"
+            );
+            ensure!(!seen.contains("--directory"), "重复指定安装目录");
+        }
         ensure!(
             result.directory.is_absolute()
                 && !result
@@ -183,11 +214,18 @@ fn digest(path: &Path) -> Result<String> {
 fn ordinary(path: &Path) -> Result<()> {
     for p in path.ancestors() {
         match fs::symlink_metadata(p) {
-            Ok(m) => ensure!(
-                !m.file_type().is_symlink(),
-                "拒绝符号链接路径：{}",
-                p.display()
-            ),
+            Ok(m) => {
+                ensure!(
+                    !m.file_type().is_symlink(),
+                    "拒绝符号链接路径：{}",
+                    p.display()
+                );
+                ensure!(
+                    !(m.is_dir() && m.mode() & 0o002 != 0 && m.mode() & libc::S_ISVTX as u32 == 0),
+                    "拒绝无 sticky 位的全局可写目录：{}",
+                    p.display()
+                );
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => (),
             Err(e) => return Err(e.into()),
         }
@@ -571,6 +609,17 @@ fn health(rt: &Runtime, root: &Path) -> Result<()> {
             .text()?
             == "ok",
         "API 不健康"
+    );
+    let response = client.get(format!("{origin}/api/v1/settings")).send()?;
+    ensure!(
+        response.status().is_success(),
+        "读取 API 设置失败，HTTP {}",
+        response.status()
+    );
+    let settings: Value = response.json()?;
+    ensure!(
+        settings["private_images"] == true,
+        "API 设置或数据库读取异常"
     );
     let html = client
         .get(format!("{origin}/"))
@@ -1017,29 +1066,17 @@ fn update(rt: &Runtime, args: &Args, bundle: &Path, new: &Manifest) -> Result<()
         health(rt, root)?;
         replace(&bundle.join("release.json"), &root.join("release.json"))?;
         link_command(root)?;
-        for (n, hash) in &old_files {
-            if new.files.contains_key(n) {
-                continue;
-            }
-            let path = root.join(n);
-            if !path.exists() {
-                continue;
-            }
-            ensure!(digest(&path)? == *hash, "旧程序文件已被修改，保留现场：{n}");
-            fs::remove_file(&path)?;
-        }
         for (n, before) in &metadata {
             let p = root.join(n);
             if !p.exists() {
                 continue;
             }
-            let m = fs::metadata(p)?;
+            let m = fs::symlink_metadata(p)?;
             ensure!(
                 before["uid"] == m.uid() && before["gid"] == m.gid() && before["mode"] == m.mode(),
                 "文件属主或权限变化：{n}"
             );
         }
-        prune_images(rt, &images)?;
         fs::remove_file(&pending)?;
         Ok(())
     })();
@@ -1055,14 +1092,36 @@ fn update(rt: &Runtime, args: &Args, bundle: &Path, new: &Manifest) -> Result<()
             pending.display()
         );
     }
-    println!(
-        "升级到 {} 完成；旧程序文件和无引用旧镜像已清理，未创建自动备份。",
-        new.version
-    );
+    for (n, hash) in &old_files {
+        if new.files.contains_key(n) {
+            continue;
+        }
+        let path = root.join(n);
+        let remove = (|| -> Result<()> {
+            if path.try_exists()? {
+                ensure!(digest(&path)? == *hash, "旧程序文件已被修改，保留现场");
+                fs::remove_file(&path)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = remove {
+            eprintln!("警告：新版本已生效，旧文件 {n} 清理失败：{e:#}");
+        }
+    }
+    if let Err(e) = prune_images(rt, &images) {
+        eprintln!("警告：新版本已生效，但旧镜像清理未完全完成：{e:#}");
+    }
+    println!("升级到 {} 完成，未创建自动备份。", new.version);
     Ok(())
 }
 fn backup(rt: &Runtime, args: &Args) -> Result<()> {
     let root = &args.directory;
+    let override_path = root.join("compose.override.yml");
+    ordinary(&override_path)?;
+    let mut files = vec![".env", "release.json", "compose.yml"];
+    if override_path.try_exists()? {
+        files.push("compose.override.yml");
+    }
     config(rt, root)?;
     let _lock = lock(root)?;
     let dest = args.backup.clone().unwrap_or_else(|| {
@@ -1081,9 +1140,6 @@ fn backup(rt: &Runtime, args: &Args) -> Result<()> {
     ensure!(!dest.exists(), "备份目录已存在");
     let active = rt.compose(root, &["ps", "--status", "running", "--services"], None)?;
     ensure!(active.lines().any(|s| s == "postgres"), "数据库未运行");
-    // shortcut: backup covers /data/uploads only; extend archive and restore together before supporting external disks.
-    let external = rt.compose(root, &["exec", "-T", "postgres", "psql", "-U", "piccove", "-d", "piccove", "-Atc", "SELECT count(*) FROM images WHERE to_jsonb(images)->>'storage_root' IS NOT NULL AND to_jsonb(images)->>'storage_root' <> '/data/uploads' AND to_jsonb(images)->>'storage_root' NOT LIKE '/data/uploads/%'"], None)?;
-    ensure!(external.trim() == "0", "存在自定义目录图片；默认备份仅覆盖 /data/uploads。请单独备份数据库及全部图片目录，未生成不完整备份");
     let running: Vec<_> = ["api", "web"]
         .into_iter()
         .filter(|s| active.lines().any(|v| v == *s))
@@ -1097,6 +1153,9 @@ fn backup(rt: &Runtime, args: &Args) -> Result<()> {
             stop.extend(&running);
             rt.compose(root, &stop, None)?;
         }
+        // shortcut: backup covers /data/uploads only; extend archive and restore together before supporting external disks.
+        let external = rt.compose(root, &["exec", "-T", "postgres", "psql", "-U", "piccove", "-d", "piccove", "-Atc", "SELECT count(*) FROM images WHERE to_jsonb(images)->>'storage_root' IS NOT NULL AND to_jsonb(images)->>'storage_root' <> '/data/uploads' AND to_jsonb(images)->>'storage_root' NOT LIKE '/data/uploads/%'"], None)?;
+        ensure!(external.trim() == "0", "存在自定义目录图片；默认备份仅覆盖 /data/uploads。请单独备份数据库及全部图片目录，未生成不完整备份");
         rt.compose(
             root,
             &[
@@ -1124,18 +1183,25 @@ fn backup(rt: &Runtime, args: &Args) -> Result<()> {
             ],
             Some(&dest.join("images.tar.gz")),
         )?;
-        for n in [".env", "release.json", "compose.yml"] {
+        for n in files {
             let mut out = OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .mode(0o600)
                 .open(dest.join(n))?;
-            io::copy(&mut File::open(root.join(n))?, &mut out)?;
+            let mut source = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(root.join(n))?;
+            io::copy(&mut source, &mut out)?;
         }
         let mut sums = String::new();
         for entry in fs::read_dir(&dest)? {
             let path = entry?.path();
-            ensure!(path.metadata()?.len() > 0, "备份为空");
+            ensure!(
+                path.file_name().unwrap() == "compose.override.yml" || path.metadata()?.len() > 0,
+                "备份为空"
+            );
             sums.push_str(&format!(
                 "{}  {}\n",
                 digest(&path)?,
@@ -1148,27 +1214,42 @@ fn backup(rt: &Runtime, args: &Args) -> Result<()> {
     let cleanup = Runtime {
         cancelled: Arc::new(AtomicBool::new(false)),
     };
-    if !cleanup
-        .docker(&["ps", "-aq", "--filter", &format!("name=^{container}$")])?
-        .trim()
-        .is_empty()
-    {
-        cleanup.docker(&["rm", "-f", &container])?;
-    }
-    if !running.is_empty() {
-        let cleanup = Runtime {
-            cancelled: Arc::new(AtomicBool::new(false)),
-        };
+    let remove = cleanup
+        .docker(&["ps", "-aq", "--filter", &format!("name=^{container}$")])
+        .and_then(|ids| {
+            if !ids.trim().is_empty() {
+                cleanup.docker(&["rm", "-f", &container])?;
+            }
+            Ok(())
+        });
+    let restart = if running.is_empty() {
+        Ok(())
+    } else {
         let mut start = vec!["start"];
         start.extend(&running);
-        cleanup.compose(root, &start, None)?;
-    }
-    result.with_context(|| format!("备份未完成，保留现场 {}", dest.display()))?;
+        cleanup.compose(root, &start, None).map(|_| ())
+    };
+    let errors: Vec<_> = [
+        result.context("归档失败"),
+        remove.with_context(|| format!("清理临时容器 {container} 失败")),
+        restart.with_context(|| format!("恢复服务 {} 失败", running.join(" "))),
+    ]
+    .into_iter()
+    .filter_map(Result::err)
+    .map(|e| format!("{e:#}"))
+    .collect();
+    ensure!(
+        errors.is_empty(),
+        "备份操作未完成，保留现场 {}。{}",
+        dest.display(),
+        errors.join("；")
+    );
     println!("手动备份：{}（含凭据，请妥善保管）", dest.display());
     Ok(())
 }
 fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
     if ["help", ""].contains(&args.action.as_str()) {
+        println!("piccovectl reset-2fa <username> [--install-dir 目录]  重置二步验证并注销该账号的全部会话");
         println!("piccovectl                              打开中文运维菜单\npiccovectl update                       更新到最新稳定版并重启\npiccovectl status|start|stop|restart|logs|health\npiccovectl backup                       手动备份\npiccovectl install --origin https://域名\npiccovectl web-manager\n自动识别程序所在的安装目录，默认 /opt/piccove。命令直接执行，无需确认参数。\n高级选项：--directory 其他实例目录；update --version X.Y.Z 或 --archive 包路径；backup --backup 新目录。\n仅 Linux x86_64；依赖 Docker Compose。升级成功不保留历史程序版本、不自动备份。");
         return Ok(());
     }
@@ -1211,6 +1292,34 @@ fn dispatch(rt: &Runtime, args: &Args) -> Result<()> {
             return health(rt, &args.directory);
         }
         let _lock = lock(&args.directory)?;
+        if args.action == "reset-2fa" {
+            let sql = format!("DO $$ DECLARE target uuid; BEGIN
+                UPDATE users SET {}, security_version=security_version+1 WHERE username='{}' RETURNING id INTO target;
+                IF NOT FOUND THEN RAISE EXCEPTION '用户不存在'; END IF;
+                DELETE FROM sessions WHERE user_id=target;
+                END; $$", account::CLEAR_TOTP, args.username);
+            rt.compose(
+                &args.directory,
+                &[
+                    "exec",
+                    "-T",
+                    "postgres",
+                    "psql",
+                    "-X",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-U",
+                    "piccove",
+                    "-d",
+                    "piccove",
+                    "-c",
+                    &sql,
+                ],
+                None,
+            )?;
+            println!("已重置 {} 的二步验证并注销全部会话", args.username);
+            return Ok(());
+        }
         ensure!(
             !args.directory.join(".piccove-update-pending.json").exists()
                 || matches!(args.action.as_str(), "status" | "logs" | "stop"),
@@ -1296,6 +1405,30 @@ pub fn run() -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn reset_2fa_arguments() {
+        let parse = |args: &[&str]| Args::parse(args.iter().map(|s| s.to_string()));
+        let args = parse(&["reset-2fa", "Admin_01-x", "--install-dir", "/srv/photos"]).unwrap();
+        assert_eq!(args.username, "Admin_01-x");
+        assert_eq!(args.directory, Path::new("/srv/photos"));
+        assert_eq!(
+            parse(&["reset-2fa", "--", "--help"]).unwrap().username,
+            "--help"
+        );
+        assert!(parse(&["update", "--install-dir", "/srv/photos"]).is_err());
+        for args in [
+            vec!["reset-2fa"],
+            vec!["reset-2fa", "ab"],
+            vec!["reset-2fa", "a'b"],
+            vec!["reset-2fa", "a b"],
+            vec!["reset-2fa", "用户"],
+            vec!["reset-2fa", "alice", "bob"],
+        ] {
+            assert!(parse(&args).is_err());
+        }
+        assert!(parse(&["reset-2fa", &"a".repeat(32)]).is_ok());
+        assert!(parse(&["reset-2fa", &"a".repeat(33)]).is_err());
+    }
+    #[test]
     fn arguments_and_versions() {
         let normalized = Args::parse(
             ["install", "--directory", "/opt//piccove/./"]
@@ -1371,6 +1504,17 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         symlink("/tmp", t.path().join("link")).unwrap();
         assert!(ordinary(&t.path().join("link/child")).is_err());
+    }
+    #[test]
+    fn ordinary_rejects_world_writable_ancestors_without_sticky_bit() {
+        let t = tempfile::tempdir().unwrap();
+        fs::set_permissions(t.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let parent = t.path().join("runner");
+        fs::create_dir(&parent).unwrap();
+        for (mode, allowed) in [(0o777, false), (0o1777, true), (0o775, true)] {
+            fs::set_permissions(&parent, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(ordinary(&parent.join("install")).is_ok(), allowed);
+        }
     }
     #[test]
     fn configuration_keeps_secrets_out_of_output() {

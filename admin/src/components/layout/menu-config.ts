@@ -23,7 +23,7 @@ export function buildSidebarMenu(
       icon: Images,
     },
     {
-      title: '我的相册',
+      title: '相册',
       path: '/app/albums',
       icon: FolderHeart,
     },
@@ -33,7 +33,7 @@ export function buildSidebarMenu(
       icon: Sparkles,
     },
     {
-      title: '账号设置',
+      title: '账号与安全',
       path: '/app/account',
       icon: UserCog,
     },

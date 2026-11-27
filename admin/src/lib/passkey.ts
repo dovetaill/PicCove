@@ -30,13 +30,13 @@ type Options = {
 };
 
 export async function passkey(register: boolean, body: unknown) {
-  if (!window.isSecureContext || !window.PublicKeyCredential)
-    throw new Error('当前环境不支持 Passkey，请使用 HTTPS 或受支持的浏览器');
   const path = register ? '/me/passkeys' : '/auth/passkey';
   const { id, options } = await api<{
     id: string;
     options: { publicKey: Options };
   }>(`${path}/start`, 'POST', body);
+  if (!window.isSecureContext || !window.PublicKeyCredential)
+    throw new Error('当前环境不支持 Passkey，请使用 HTTPS 或受支持的浏览器');
   const value = options.publicKey;
   const publicKey = {
     ...value,

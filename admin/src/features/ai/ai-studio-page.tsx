@@ -9,14 +9,27 @@ import {
   ImagePlus,
   LoaderCircle,
   Maximize2,
+  MoreHorizontal,
+  Pencil,
   RotateCcw,
   Sparkles,
   SquarePen,
+  Trash2,
   X,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Alert, AlertTitle } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -27,6 +40,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
@@ -189,19 +210,23 @@ export function AiStudioPage() {
   const [albumTargetPicId, setAlbumTargetPicId] = useState<string | null>(null);
   const [targetAlbumId, setTargetAlbumId] = useState<string>('none');
   const [savingAlbum, setSavingAlbum] = useState(false);
+  const [renamingConv, setRenamingConv] = useState<AiConversation | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [deletingConv, setDeletingConv] = useState<AiConversation | null>(null);
+  const [busyConvOp, setBusyConvOp] = useState(false);
 
   const client = useQueryClient();
   const me = useMe();
   const ownerId = me.data?.user.id || '';
 
   const conversations = useQuery({
-    queryKey: ['ai-conversations', page],
+    queryKey: ['ai-conversations', ownerId, page],
     queryFn: () =>
       api<Page<AiConversation>>(`/ai/conversations?page=${page}`),
   });
 
   const status = useQuery({
-    queryKey: ['ai-status'],
+    queryKey: ['ai-status', ownerId],
     queryFn: () => api<AiStatus>('/ai/status'),
   });
 
@@ -236,10 +261,25 @@ export function AiStudioPage() {
     messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [selectedId, latestMsg?.id, latestMsg?.status]);
 
+  const hadRunningRef = useRef(false);
+
   useEffect(() => {
+    hadRunningRef.current = false;
+  }, [selectedId]);
+
+  useEffect(() => {
+    const hasRunning = !!messages.data?.some((m) =>
+      ['queued', 'running'].includes(m.status),
+    );
+    if (hasRunning) {
+      hadRunningRef.current = true;
+      return;
+    }
     if (
+      hadRunningRef.current &&
       messages.data?.some((m) => ['completed', 'failed'].includes(m.status))
     ) {
+      hadRunningRef.current = false;
       void client.invalidateQueries({ queryKey: ['me'] });
       void client.invalidateQueries({ queryKey: ['ai-status'] });
       void client.invalidateQueries({ queryKey: ['images'] });
@@ -344,6 +384,49 @@ export function AiStudioPage() {
     }
   }
 
+  async function handleRenameConversation(e: FormEvent) {
+    e.preventDefault();
+    if (!renamingConv || busyConvOp) return;
+    const trimmed = renameTitle.trim();
+    if (!trimmed) {
+      toast.error('会话标题不能为空');
+      return;
+    }
+    setBusyConvOp(true);
+    try {
+      await api(`/ai/conversations/${renamingConv.id}`, 'PATCH', {
+        title: trimmed,
+      });
+      await client.invalidateQueries({ queryKey: ['ai-conversations'] });
+      toast.success('会话已重命名');
+      setRenamingConv(null);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusyConvOp(false);
+    }
+  }
+
+  async function handleDeleteConversation() {
+    if (!deletingConv || busyConvOp) return;
+    setBusyConvOp(true);
+    try {
+      await api(`/ai/conversations/${deletingConv.id}`, 'DELETE');
+      if (selectedId === deletingConv.id) {
+        setSelectedId(null);
+        setPrompt('');
+        setReference(null);
+      }
+      await client.invalidateQueries({ queryKey: ['ai-conversations'] });
+      toast.success('会话已移除');
+      setDeletingConv(null);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusyConvOp(false);
+    }
+  }
+
   const historyListContent = (
     <div className="flex flex-col h-full p-3 gap-2">
       <Button
@@ -375,27 +458,71 @@ export function AiStudioPage() {
             {conversations.data?.items.map((conv) => {
               const active = selectedId === conv.id;
               return (
-                <button
+                <div
                   key={conv.id}
-                  type="button"
-                  disabled={busySend || !!referenceUpload}
-                  aria-current={active ? 'page' : undefined}
-                  title={conv.title}
-                  onClick={() => {
-                    setSelectedId(conv.id);
-                    setReference(null);
-                    setPrompt('');
-                    setMobileHistoryOpen(false);
-                  }}
                   className={cn(
-                    'cursor-pointer w-full text-start px-2.5 py-2 rounded-lg text-xs transition-colors truncate block',
-                    active
-                      ? 'bg-primary/10 text-primary font-semibold'
-                      : 'text-secondary-foreground hover:bg-accent',
+                    'group flex items-center gap-0.5 rounded-lg pe-1 transition-colors',
+                    active ? 'bg-primary/10' : 'hover:bg-accent',
                   )}
                 >
-                  {conv.title}
-                </button>
+                  <button
+                    type="button"
+                    disabled={busySend || !!referenceUpload}
+                    aria-current={active ? 'page' : undefined}
+                    title={conv.title}
+                    onClick={() => {
+                      setSelectedId(conv.id);
+                      setReference(null);
+                      setPrompt('');
+                      setMobileHistoryOpen(false);
+                    }}
+                    className={cn(
+                      'cursor-pointer min-w-0 flex-1 text-start px-2.5 py-2 text-xs truncate block',
+                      active
+                        ? 'text-primary font-semibold'
+                        : 'text-secondary-foreground',
+                    )}
+                  >
+                    {conv.title}
+                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        size="sm"
+                        mode="icon"
+                        variant="ghost"
+                        aria-label={`会话操作 ${conv.title}`}
+                        className={cn(
+                          'size-6 shrink-0',
+                          active
+                            ? 'opacity-80 hover:opacity-100'
+                            : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+                        )}
+                      >
+                        <MoreHorizontal className="size-3.5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          setRenamingConv(conv);
+                          setRenameTitle(conv.title);
+                        }}
+                      >
+                        <Pencil />
+                        重命名
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={() => setDeletingConv(conv)}
+                      >
+                        <Trash2 />
+                        删除会话
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               );
             })}
           </div>
@@ -841,6 +968,79 @@ export function AiStudioPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={!!renamingConv}
+        onOpenChange={(open) => {
+          if (!open && !busyConvOp) setRenamingConv(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>重命名会话</DialogTitle>
+            <DialogDescription>修改左侧历史列表中的会话标题</DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => void handleRenameConversation(e)}
+            className="space-y-4"
+          >
+            <div className="space-y-2">
+              <Label htmlFor="ai-conv-title">会话标题</Label>
+              <Input
+                id="ai-conv-title"
+                value={renameTitle}
+                onChange={(e) => setRenameTitle(e.target.value)}
+                maxLength={100}
+                required
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busyConvOp}
+                onClick={() => setRenamingConv(null)}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={busyConvOp}>
+                {busyConvOp ? '保存中…' : '保存'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={!!deletingConv}
+        onOpenChange={(open) => {
+          if (!open && !busyConvOp) setDeletingConv(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              删除会话「{deletingConv?.title}」？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              删除后该会话不再显示在列表中，已保存到图库的生成图片不受影响。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busyConvOp}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={busyConvOp}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDeleteConversation();
+              }}
+            >
+              {busyConvOp ? '正在删除…' : '确认删除'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

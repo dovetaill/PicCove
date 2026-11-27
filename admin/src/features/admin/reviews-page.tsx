@@ -70,7 +70,12 @@ export function ReviewsPage() {
   const query = useQuery({
     queryKey: ['reviews', page, statusFilter, debouncedQuery],
     queryFn: () => api<Page<ReviewItem>>(`/admin/reviews?${params.toString()}`),
-    refetchInterval: 5000,
+    refetchInterval: (q) =>
+      q.state.data?.items.some((r) =>
+        ['pending', 'running'].includes(r.status),
+      )
+        ? 4000
+        : false,
   });
 
   const items = query.data?.items || [];
@@ -128,27 +133,12 @@ export function ReviewsPage() {
       const res = await api<Page<Picture>>(`/images?all=true&ids=${imageId}`);
       if (res.items[0]) {
         setPreviewPic(res.items[0]);
-        return;
+      } else {
+        toast.error('原图已被删除，无法预览');
       }
-    } catch {
-      // Fallback to direct preview object.
+    } catch (error) {
+      toast.error(errorMessage(error, '读取审核图片信息失败'));
     }
-    setPreviewPic({
-      id: imageId,
-      user_id: '',
-      album_id: null,
-      original_name: `审核图片 ${imageId.slice(0, 8)}`,
-      size_bytes: 0,
-      width: 0,
-      height: 0,
-      url: `/i/${imageId}`,
-      thumbnail_url: `/api/v1/images/${imageId}/thumbnail`,
-      deleted_at: null,
-      is_public: false,
-      moderation_status: 'review',
-      moderation_reason: '',
-      moderation_hold: false,
-    });
   }
 
   return (

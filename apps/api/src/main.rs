@@ -1,10 +1,15 @@
+mod account;
 mod ai;
 mod file_jobs;
 mod management;
+mod metadata;
 mod security;
+mod shares;
 mod storage;
 mod thumbnails;
+mod tokens;
 
+use account::valid_username;
 use anyhow::{bail, Context};
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, SaltString},
@@ -16,7 +21,7 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -27,8 +32,16 @@ use sqlx::{
     postgres::{PgPoolOptions, PgRow},
     FromRow, PgPool, Row,
 };
-use std::{env, io::Cursor, net::SocketAddr, path::PathBuf, sync::Arc};
-use tokio::sync::{Mutex, Semaphore};
+use std::{
+    collections::HashMap,
+    env,
+    io::Cursor,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use uuid::Uuid;
 
@@ -45,9 +58,22 @@ struct AppState {
     public_base_url: String,
     origin: String,
     contact_url: Option<String>,
-    uploads: Mutex<()>,
+    storage_write: Mutex<()>,
+    user_uploads: Mutex<HashMap<Uuid, Arc<Mutex<()>>>>,
+    trust_proxy: bool,
+    http: reqwest::Client,
     passwords: Arc<Semaphore>,
     security: security::Security,
+}
+impl AppState {
+    async fn user_upload(&self, user_id: Uuid) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut users = self.user_uploads.lock().await;
+            users.retain(|_, lock| Arc::strong_count(lock) > 1);
+            users.entry(user_id).or_default().clone()
+        };
+        lock.lock_owned().await
+    }
 }
 #[derive(Debug)]
 struct ApiError(StatusCode, String);
@@ -67,6 +93,9 @@ fn forbidden() -> ApiError {
 }
 fn missing() -> ApiError {
     ApiError(StatusCode::NOT_FOUND, "记录不存在".into())
+}
+fn conflict(message: &str) -> ApiError {
+    ApiError(StatusCode::CONFLICT, message.into())
 }
 fn internal(error: impl std::fmt::Debug) -> ApiError {
     tracing::error!(?error, "request failed");
@@ -99,6 +128,16 @@ struct User {
     created_at: DateTime<Utc>,
     #[serde(skip_serializing)]
     security_version: i64,
+    #[serde(rename = "totp_enabled", serialize_with = "serialize_present")]
+    totp_secret: Option<String>,
+    #[serde(skip)]
+    totp_recovery_hashes: sqlx::types::Json<Vec<String>>,
+}
+fn serialize_present<S: serde::Serializer>(
+    secret: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bool(secret.is_some())
 }
 #[derive(Serialize, sqlx::FromRow)]
 struct ImageRow {
@@ -155,7 +194,24 @@ fn session_token(headers: &HeaderMap) -> ApiResult<String> {
         .ok_or_else(unauthorized)
 }
 fn digest(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    storage::hash(value.as_bytes())
+}
+fn random_hex<const N: usize>() -> ApiResult<String> {
+    let mut bytes = [0; N];
+    openssl::rand::rand_bytes(&mut bytes).map_err(internal)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+fn lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+async fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 async fn authenticate(headers: &HeaderMap, state: &AppState) -> ApiResult<User> {
     sqlx::query_as::<_, User>("SELECT u.* FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires_at>NOW() AND NOT u.disabled")
@@ -173,41 +229,71 @@ async fn protect_origin(
     request: Request,
     next: Next,
 ) -> Response {
+    let token_upload = request.method() == Method::POST
+        && request.uri().path() == "/api/v1/images"
+        && tokens::bearer(request.headers()).is_some();
     if !matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::OPTIONS
-    ) && request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        != Some(state.origin.as_str())
+    ) && !token_upload
+        && request
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            != Some(state.origin.as_str())
     {
         return forbidden().into_response();
     }
     next.run(request).await
 }
-// shortcut: reverse-proxy clients share peer-IP limits; add trusted-proxy handling before scaling public registration.
+fn client_ip(headers: &HeaderMap, peer: SocketAddr, state: &AppState) -> IpAddr {
+    let ip = peer.ip();
+    let private = match ip {
+        IpAddr::V4(ip) => ip.is_private(),
+        IpAddr::V6(ip) => ip.is_unique_local(),
+    };
+    if state.trust_proxy && (ip.is_loopback() || private) {
+        if let Some(real) = headers
+            .get("x-real-ip")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse().ok())
+        {
+            return real;
+        }
+    }
+    ip
+}
+fn rate_limited() -> ApiError {
+    ApiError(
+        StatusCode::TOO_MANY_REQUESTS,
+        "操作过于频繁，请稍后再试".into(),
+    )
+}
+const RATE_UPSERT: &str = "INSERT INTO rate_limits(key, hits, expires_at)
+    VALUES ($1, 1, NOW() + make_interval(secs => $2))
+    ON CONFLICT (key) DO UPDATE
+    SET hits = CASE WHEN rate_limits.expires_at <= NOW() THEN 1 ELSE rate_limits.hits + 1 END,
+        expires_at = CASE WHEN rate_limits.expires_at <= NOW() THEN NOW() + make_interval(secs => $2) ELSE rate_limits.expires_at END
+    RETURNING hits";
 async fn rate(state: &AppState, key: String, limit: i32, seconds: i32) -> ApiResult<()> {
-    sqlx::query("DELETE FROM rate_limits WHERE expires_at < NOW()")
-        .execute(&state.pool)
+    let hits: i32 = sqlx::query_scalar(RATE_UPSERT)
+        .bind(key)
+        .bind(seconds as f64)
+        .fetch_one(&state.pool)
         .await
         .map_err(internal)?;
-    let hits: i32 = sqlx::query_scalar("INSERT INTO rate_limits(key,hits,expires_at) VALUES($1,1,NOW()+make_interval(secs=>$2)) ON CONFLICT(key) DO UPDATE SET hits=rate_limits.hits+1 RETURNING hits")
-        .bind(key).bind(seconds as f64).fetch_one(&state.pool).await.map_err(internal)?;
+    if hits == 1 {
+        // A concurrent hit can renew a selected window before DELETE obtains its row lock.
+        sqlx::query("DELETE FROM rate_limits WHERE key IN (SELECT key FROM rate_limits WHERE expires_at < NOW() LIMIT 64) AND expires_at < NOW()")
+            .execute(&state.pool).await.map_err(internal)?;
+    }
     if hits > limit {
-        return Err(ApiError(
-            StatusCode::TOO_MANY_REQUESTS,
-            "操作过于频繁，请稍后再试".into(),
-        ));
+        return Err(rate_limited());
     }
     Ok(())
 }
 fn validate_credentials(username: &str, password: &str) -> ApiResult<()> {
-    if !(3..=32).contains(&username.len())
-        || !username
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
-    {
+    if !valid_username(username) {
         return Err(bad("用户名须为 3–32 位字母、数字、下划线或连字符"));
     }
     validate_password(password)
@@ -247,7 +333,10 @@ async fn verify_password(password: String, hash: String, state: &AppState) -> Ap
         let hash = PasswordHash::new(&hash).map_err(internal)?;
         Argon2::default()
             .verify_password(password.as_bytes(), &hash)
-            .map_err(|_| unauthorized())
+            .map_err(|e| match e {
+                argon2::password_hash::Error::Password => unauthorized(),
+                _ => internal(e),
+            })
     })
     .await
     .map_err(internal)?
@@ -273,18 +362,41 @@ fn cookie(token: &str, state: &AppState, max_age: u32) -> HeaderValue {
 async fn login(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(input): Json<Credentials>,
 ) -> ApiResult<Response> {
-    rate(&state, format!("login:{}", peer.ip()), 20, 60).await?;
-    rate(&state, "login:global".into(), 120, 60).await?;
     validate_credentials(&input.username, &input.password)?;
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username=$1 AND NOT disabled")
-        .bind(&input.username)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(internal)?
-        .ok_or_else(unauthorized)?;
-    verify_password(input.password, user.password_hash.clone(), &state).await?;
+    let ip = client_ip(&headers, peer, &state);
+    rate(&state, format!("login:ip:{ip}"), 20, 60).await?;
+    rate(&state, "login:global".into(), 120, 60).await?;
+    let failure_key = format!("login:fail:{}", input.username.to_ascii_lowercase());
+    let limited: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM rate_limits WHERE key=$1 AND expires_at>NOW() AND hits>=10)",
+    )
+    .bind(&failure_key)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal)?;
+    if limited {
+        return Err(rate_limited());
+    }
+    let failed = async |error| match rate(&state, failure_key.clone(), 10, 300).await {
+        Ok(()) | Err(ApiError(StatusCode::TOO_MANY_REQUESTS, _)) => error,
+        Err(db) => db,
+    };
+    let Some(user) =
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE username=$1 AND NOT disabled")
+            .bind(&input.username)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(internal)?
+    else {
+        return Err(failed(unauthorized()).await);
+    };
+    match verify_password(input.password, user.password_hash.clone(), &state).await {
+        Err(e @ ApiError(StatusCode::UNAUTHORIZED, _)) => return Err(failed(e).await),
+        result => result?,
+    }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let mut tx = state.pool.begin().await.map_err(internal)?;
     let current: User = sqlx::query_as("SELECT * FROM users WHERE id=$1 FOR UPDATE")
@@ -292,13 +404,22 @@ async fn login(
         .fetch_one(&mut *tx)
         .await
         .map_err(internal)?;
-    if current.disabled
-        || current.password_hash != user.password_hash
+    if current.disabled {
+        drop(tx);
+        return Err(failed(unauthorized()).await);
+    }
+    if current.password_hash != user.password_hash
         || current.security_version != user.security_version
     {
         return Err(unauthorized());
     }
-    security::verify_totp(&mut tx, user.id, &input.code).await?;
+    match security::verify_totp(&mut tx, user.id, &input.code).await {
+        Err(e @ ApiError(StatusCode::BAD_REQUEST, _)) => {
+            drop(tx);
+            return Err(failed(e).await);
+        }
+        result => result?,
+    }
     sqlx::query("DELETE FROM sessions WHERE expires_at<NOW()")
         .execute(&mut *tx)
         .await
@@ -335,11 +456,13 @@ async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiRe
 async fn register(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(input): Json<Credentials>,
 ) -> ApiResult<StatusCode> {
-    rate(&state, format!("register:{}", peer.ip()), 5, 3600).await?;
-    rate(&state, "register:global".into(), 20, 3600).await?;
     validate_credentials(&input.username, &input.password)?;
+    let ip = client_ip(&headers, peer, &state);
+    rate(&state, format!("register:{ip}"), 5, 3600).await?;
+    rate(&state, "register:global".into(), 20, 3600).await?;
     let open: bool = sqlx::query_scalar("SELECT registration_open FROM settings")
         .fetch_one(&state.pool)
         .await
@@ -560,9 +683,9 @@ async fn list_images(
     let q = search_pattern(query.q.as_deref(), Some(200))?;
     let status = moderation_filter(query.moderation_status.as_deref(), true)?;
     // Reconcile only after an earlier upload has finished committing its file.
-    let _upload = if query.content_hash.is_some() {
+    let _upload = if let (Some(_), Some(uid)) = (&query.content_hash, owner) {
         Some(
-            tokio::time::timeout(std::time::Duration::from_secs(10), state.uploads.lock())
+            tokio::time::timeout(Duration::from_secs(10), state.user_upload(uid))
                 .await
                 .map_err(|_| {
                     ApiError(
@@ -580,8 +703,9 @@ async fn list_images(
               SELECT * FROM images
               WHERE ($1::uuid IS NULL OR user_id = $1)
                 AND ($2::uuid IS NULL OR album_id = $2)
-                AND ($3::text IS NULL OR (content_hash = LOWER($3) AND deleted_at IS NULL))
+                AND ($3::text IS NULL OR ((content_hash = LOWER($3) OR source_hash = LOWER($3)) AND deleted_at IS NULL))
                 AND ($4::uuid[] IS NULL OR id = ANY($4))
+                AND ($4::uuid[] IS NOT NULL OR deleted_at IS NULL)
                 AND ($5::text IS NULL OR original_name ILIKE $5 ESCAPE E'\\')
                 AND ($6::boolean IS NULL OR is_public = $6)
                 AND ($7::text IS NULL OR moderation_status = $7)
@@ -612,32 +736,71 @@ async fn list_images(
         Ok(image)
     })
 }
-fn validate_image(bytes: &[u8]) -> ApiResult<(&'static str, &'static str, u32, u32)> {
-    if bytes.is_empty() || bytes.len() > MAX_UPLOAD_BYTES {
-        return Err(bad("图片大小须为 1 字节至 10 MiB"));
-    }
-    let format = image::guess_format(bytes).map_err(|_| bad("无效图片"))?;
-    let (extension, mime) = match format {
-        ImageFormat::Jpeg => ("jpg", "image/jpeg"),
-        ImageFormat::Png => ("png", "image/png"),
-        ImageFormat::WebP => ("webp", "image/webp"),
-        ImageFormat::Gif => ("gif", "image/gif"),
-        _ => return Err(bad("仅支持 JPEG、PNG、WebP、GIF")),
-    };
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16000);
-    limits.max_image_height = Some(16000);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|_| bad("图片损坏或解码内存超出限制"))?;
-    Ok((extension, mime, image.width(), image.height()))
+struct CheckedImage {
+    ext: &'static str,
+    mime: &'static str,
+    width: u32,
+    height: u32,
+    hash: String,
+    source_hash: String,
+}
+async fn validate_image(raw: Bytes, strip_metadata: bool) -> ApiResult<(Bytes, CheckedImage)> {
+    tokio::task::spawn_blocking(move || {
+        let invalid = |message: &str| {
+            bad(if strip_metadata {
+                metadata::STRIP_ERROR
+            } else {
+                message
+            })
+        };
+        if raw.is_empty() || raw.len() > MAX_UPLOAD_BYTES {
+            return Err(invalid("图片大小须为 1 字节至 10 MiB"));
+        }
+        let source_hash = storage::hash(&raw);
+        let bytes = if strip_metadata {
+            Bytes::from(metadata::strip(&raw).ok_or_else(|| bad(metadata::STRIP_ERROR))?)
+        } else {
+            raw
+        };
+        let format = image::guess_format(&bytes).map_err(|_| invalid("无效图片"))?;
+        let (ext, mime) = match format {
+            ImageFormat::Jpeg => ("jpg", "image/jpeg"),
+            ImageFormat::Png => ("png", "image/png"),
+            ImageFormat::WebP => ("webp", "image/webp"),
+            ImageFormat::Gif => ("gif", "image/gif"),
+            _ => return Err(invalid("仅支持 JPEG、PNG、WebP、GIF")),
+        };
+        let mut reader = ImageReader::with_format(Cursor::new(&bytes), format);
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(16000);
+        limits.max_image_height = Some(16000);
+        limits.max_alloc = Some(128 * 1024 * 1024);
+        reader.limits(limits);
+        let image = reader
+            .decode()
+            .map_err(|_| invalid("图片损坏或解码内存超出限制"))?;
+        let checked = CheckedImage {
+            ext,
+            mime,
+            width: image.width(),
+            height: image.height(),
+            hash: if strip_metadata {
+                storage::hash(&bytes)
+            } else {
+                source_hash.clone()
+            },
+            source_hash,
+        };
+        Ok((bytes, checked))
+    })
+    .await
+    .map_err(internal)?
 }
 #[derive(Deserialize)]
 struct UploadOptions {
     private: Option<bool>,
+    #[serde(default)]
+    strip_metadata: bool,
     album_id: Option<Uuid>,
     expected_user_id: Option<Uuid>,
 }
@@ -647,7 +810,7 @@ async fn upload_image(
     Query(options): Query<UploadOptions>,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
-    let user = authenticate(&headers, &state).await?;
+    let (user, default_album, default_public) = tokens::upload_auth(&headers, &state).await?;
     if options.expected_user_id.is_some_and(|id| id != user.id) {
         return Err(ApiError(
             StatusCode::CONFLICT,
@@ -656,37 +819,41 @@ async fn upload_image(
     }
     ai::can_create(&user)?;
     rate(&state, format!("upload:{}", user.id), 60, 60).await?;
-    let _guard = state.uploads.lock().await;
-    let mut upload: Option<(String, Bytes)> = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| bad("上传内容无效或过大"))?
-    {
-        if field.name() != Some("file") {
-            continue;
+    let upload_guard = state.user_upload(user.id).await;
+    let (original_name, bytes) = tokio::time::timeout(Duration::from_secs(60), async {
+        let mut upload: Option<(String, Bytes)> = None;
+        while let Some(field) = multipart
+            .next_field()
+            .await
+            .map_err(|_| bad("上传内容无效或过大"))?
+        {
+            if field.name() != Some("file") {
+                continue;
+            }
+            if upload.is_some() {
+                return Err(bad("每次请求只接受一张图片"));
+            }
+            let name = field
+                .file_name()
+                .unwrap_or("image")
+                .chars()
+                .take(200)
+                .collect();
+            let bytes = field.bytes().await.map_err(|_| bad("上传内容无效或过大"))?;
+            upload = Some((name, bytes));
         }
-        if upload.is_some() {
-            return Err(bad("每次请求只接受一张图片"));
-        }
-        let name = field
-            .file_name()
-            .unwrap_or("image")
-            .chars()
-            .take(200)
-            .collect();
-        let bytes = field.bytes().await.map_err(|_| bad("上传内容无效或过大"))?;
-        upload = Some((name, bytes));
-    }
-    let (original_name, bytes) = upload.ok_or_else(|| bad("缺少图片"))?;
-    let digest = storage::hash(&bytes);
+        upload.ok_or_else(|| bad("缺少图片"))
+    })
+    .await
+    .map_err(|_| bad("上传超时，请重试"))??;
+    let (bytes, checked) = validate_image(bytes, options.strip_metadata).await?;
     // Older images acquire their digest lazily; duplicate uploads retain the original visibility and album.
     let candidates: Vec<ImageRow> = sqlx::query_as(
         "SELECT * FROM images WHERE user_id=$1 AND size_bytes=$2 AND deleted_at IS NULL AND (content_hash=$3 OR content_hash IS NULL) ORDER BY created_at,id",
     )
     .bind(user.id)
     .bind(bytes.len() as i64)
-    .bind(&digest)
+    .bind(&checked.hash)
     .fetch_all(&state.pool)
     .await
     .map_err(internal)?;
@@ -704,48 +871,71 @@ async fn upload_image(
         .await
         .map_err(internal)??;
         if let Some(existing_hash) = existing_hash {
-            sqlx::query("UPDATE images SET content_hash=$1 WHERE id=$2")
-                .bind(&existing_hash)
-                .bind(existing.id)
-                .execute(&state.pool)
-                .await
-                .map_err(internal)?;
-            if existing_hash == digest {
+            // A content match can carry one distinct original hash while both remain searchable.
+            let source_alias = (existing_hash == checked.hash
+                && checked.source_hash != checked.hash)
+                .then_some(&checked.source_hash);
+            let current: Option<ImageRow> = sqlx::query_as(
+                "UPDATE images SET content_hash=$1,source_hash=COALESCE($3,source_hash,$1)
+                 WHERE id=$2 AND deleted_at IS NULL
+                   AND ($3::text IS NULL OR source_hash IS NULL OR source_hash IN ($1,$3)) RETURNING *",
+            )
+            .bind(&existing_hash)
+            .bind(existing.id)
+            .bind(source_alias)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(internal)?;
+            if let Some(existing) = current.filter(|_| existing_hash == checked.hash) {
                 let mut result = image_dto(existing, &state);
                 result["duplicate"] = serde_json::json!(true);
                 return Ok((StatusCode::OK, Json(result)));
             }
         }
     }
-    let row = store_image(
-        &state,
-        user.id,
-        original_name,
-        bytes,
-        !options.private.unwrap_or(false),
-        options.album_id,
-        Uuid::new_v4(),
-        None,
-    )
-    .await?;
-    Ok((StatusCode::CREATED, Json(image_dto(row, &state))))
+    // Finish the accepted write and hold its reconciliation lock even if the HTTP client disconnects.
+    tokio::spawn(async move {
+        let _upload = upload_guard;
+        let _write = state.storage_write.lock().await;
+        let row = store_image(
+            &state,
+            user.id,
+            original_name,
+            bytes,
+            checked,
+            options.private.map_or(default_public, |private| !private),
+            options.album_id.or(default_album),
+            Uuid::new_v4(),
+            None,
+            None,
+        )
+        .await?;
+        Ok((StatusCode::CREATED, Json(image_dto(row, &state))))
+    })
+    .await
+    .map_err(internal)?
 }
-// Callers hold uploads so imports, migration, quota accounting and deletion cannot race.
+// Callers hold storage_write from the space check through activation or cleanup.
 async fn store_image(
     state: &AppState,
     user_id: Uuid,
     original_name: String,
     bytes: Bytes,
+    checked: CheckedImage,
     is_public: bool,
     album_id: Option<Uuid>,
     id: Uuid,
     import_key: Option<String>,
+    generation: Option<(Uuid, &str, &str)>,
 ) -> ApiResult<ImageRow> {
-    let check_bytes = bytes.clone();
-    let (extension, mime, width, height) =
-        tokio::task::spawn_blocking(move || validate_image(&check_bytes))
-            .await
-            .map_err(internal)??;
+    let CheckedImage {
+        ext,
+        mime,
+        width,
+        height,
+        hash,
+        source_hash,
+    } = checked;
     let location = storage::current(state).await?;
     let dir = location.open()?;
     if dir.available().map_err(storage::io_error)? < DISK_RESERVE + bytes.len() as u64 {
@@ -771,39 +961,61 @@ async fn store_image(
     if bytes.len() as i64 > current.quota_bytes.saturating_sub(used) {
         return Err(bad("存储配额不足，请联系管理员"));
     }
-    let storage_key = format!("{}/{id}.{extension}", Utc::now().format("%Y/%m/%d"));
-    if let Some(album_id) = album_id {
-        let valid: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM albums WHERE id=$1 AND user_id=$2)")
-                .bind(album_id)
-                .bind(user_id)
-                .fetch_one(&mut *tx)
+    let storage_key = format!("{}/{id}.{ext}", Utc::now().format("%Y/%m/%d"));
+    check_album(&mut tx, user_id, album_id).await?;
+    // Keep a pending row until the file is durable; interrupted uploads remain identifiable for cleanup.
+    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public,storage_root,album_id,import_key,content_hash,source_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10,$11,$12,$13,$14) RETURNING *")
+        .bind(id).bind(user_id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(is_public).bind(&location.path).bind(album_id).bind(import_key).bind(&hash).bind(source_hash).fetch_one(&mut *tx).await.map_err(internal)?;
+    let key = row.storage_key.clone();
+    let mut written = None;
+    let mut committing = false;
+    let result = async {
+        tx.commit().await.map_err(internal)?;
+        written = Some(
+            tokio::task::spawn_blocking(move || dir.write_new(&key, &bytes).map(|()| dir))
                 .await
-                .map_err(internal)?;
-        if !valid {
-            return Err(bad("相册不属于所选用户"));
+                .map_err(internal)?
+                .map_err(storage::io_error)?,
+        );
+        let mut tx = state.pool.begin().await.map_err(internal)?;
+        ai::enqueue_review(&mut tx, &current, &row, &hash).await?;
+        let active = sqlx::query_as("UPDATE images SET deleted_at=NULL WHERE id=$1 RETURNING *")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(internal)?;
+        if let Some((message, response_id, text)) = generation {
+            ai::complete_generation(&mut tx, message, response_id, text, Some(id)).await?;
+        }
+        committing = true;
+        tx.commit().await.map_err(internal)?;
+        Ok(active)
+    }
+    .await;
+    if result.is_err() {
+        let deleted = match sqlx::query("DELETE FROM images WHERE id=$1 AND deleted_at IS NOT NULL")
+            .bind(id)
+            .execute(&state.pool)
+            .await
+        {
+            Ok(r) => r.rows_affected() == 1,
+            Err(e) => {
+                tracing::warn!(image_id=%id, error=%e, "pending image cleanup deferred");
+                false
+            }
+        };
+        // A lost COMMIT reply can mean the image and its message are already live.
+        if let Some(dir) = written.filter(|_| !committing || deleted) {
+            if let Err(e) = dir.remove(&row.storage_key) {
+                tracing::warn!(image_id=%id, key=%row.storage_key, error=%e, "failed to remove unused image file");
+            }
+        }
+        if let Err(e) = sqlx::query("DELETE FROM image_reviews r WHERE r.user_id=$1 AND r.content_hash=$2 AND NOT EXISTS (SELECT 1 FROM images i WHERE i.user_id=r.user_id AND i.content_hash=r.content_hash)")
+            .bind(user_id).bind(&hash).execute(&state.pool).await {
+            tracing::warn!(image_id=%id, error=%e, "orphan review cleanup failed");
         }
     }
-    // Keep a pending row until the file is durable; interrupted uploads remain identifiable for cleanup.
-    let row: ImageRow=sqlx::query_as("INSERT INTO images(id,user_id,original_name,storage_key,content_type,size_bytes,width,height,deleted_at,is_public,storage_root,album_id,import_key,content_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10,$11,$12,$13) RETURNING *")
-        .bind(id).bind(user_id).bind(original_name).bind(storage_key).bind(mime).bind(bytes.len() as i64).bind(width as i32).bind(height as i32).bind(is_public).bind(&location.path).bind(album_id).bind(import_key).bind(storage::hash(&bytes)).fetch_one(&mut *tx).await.map_err(internal)?;
-    ai::enqueue_review(&mut tx, &current, &row, &storage::hash(&bytes)).await?;
-    tx.commit().await.map_err(internal)?;
-    let key = row.storage_key.clone();
-    tokio::task::spawn_blocking(move || dir.write_new(&key, &bytes))
-        .await
-        .map_err(internal)?
-        .map_err(storage::io_error)?;
-    sqlx::query("UPDATE images SET deleted_at=NULL WHERE id=$1")
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(internal)?;
-    sqlx::query_as("SELECT * FROM images WHERE id=$1")
-        .bind(id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(internal)
+    result
 }
 #[derive(Deserialize)]
 struct ImageUpdate {
@@ -866,6 +1078,9 @@ async fn update_visibility(
         .fetch_one(&mut *tx)
         .await
         .map_err(internal)?;
+    if current.disabled {
+        return Err(unauthorized());
+    }
     if input.is_public {
         ai::can_create(&current)?;
     }
@@ -877,7 +1092,7 @@ async fn update_visibility(
             .await
             .map_err(internal)?
             .ok_or_else(missing)?;
-    if input.is_public && matches!(row.moderation_status.as_str(), "blocked" | "review") {
+    if input.is_public && ai::restricted(&row.moderation_status) {
         return Err(bad("图片被审核限制，不能公开"));
     }
     let result = sqlx::query(
@@ -920,8 +1135,14 @@ async fn delete_image(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let user = authenticate(&headers, &state).await?;
-    let _guard = state.uploads.lock().await;
-    let row: ImageRow = sqlx::query_as(
+    if !delete_owned_image(&state, &user, id).await? {
+        return Err(missing());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn delete_owned_image(state: &AppState, user: &User, id: Uuid) -> ApiResult<bool> {
+    let _guard = state.storage_write.lock().await;
+    let row: Option<ImageRow> = sqlx::query_as(
         "UPDATE images SET deleted_at=NOW() WHERE id=$1 AND (user_id=$2 OR $3) RETURNING *",
     )
     .bind(id)
@@ -929,10 +1150,75 @@ async fn delete_image(
     .bind(user.is_admin)
     .fetch_optional(&state.pool)
     .await
-    .map_err(internal)?
-    .ok_or_else(missing)?;
-    remove_file_record(&state, &row).await?;
-    Ok(StatusCode::NO_CONTENT)
+    .map_err(internal)?;
+    let Some(row) = row else { return Ok(false) };
+    remove_file_record(state, &row).await?;
+    Ok(true)
+}
+async fn check_album(
+    conn: &mut sqlx::PgConnection,
+    user: Uuid,
+    album: Option<Uuid>,
+) -> ApiResult<()> {
+    if let Some(id) = album {
+        sqlx::query("SELECT id FROM albums WHERE id=$1 AND user_id=$2 FOR KEY SHARE")
+            .bind(id)
+            .bind(user)
+            .fetch_optional(conn)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| bad("相册不属于所选用户"))?;
+    }
+    Ok(())
+}
+#[derive(Deserialize)]
+struct BatchImages {
+    ids: Vec<Uuid>,
+    action: String,
+    album_id: Option<Uuid>,
+    is_public: Option<bool>,
+}
+async fn batch_images(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut input): Json<BatchImages>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let user = authenticate(&headers, &state).await?;
+    input.ids.sort_unstable();
+    input.ids.dedup();
+    if !(1..=48).contains(&input.ids.len()) {
+        return Err(bad("每次请选择 1–48 张图片"));
+    }
+    let processed = match input.action.as_str() {
+        "move" => {
+            let mut tx = state.pool.begin().await.map_err(internal)?;
+            check_album(&mut tx, user.id, input.album_id).await?;
+            let updated = sqlx::query("UPDATE images SET album_id=$1 WHERE user_id=$2 AND id=ANY($3) AND deleted_at IS NULL")
+                .bind(input.album_id).bind(user.id).bind(&input.ids).execute(&mut *tx).await.map_err(internal)?;
+            tx.commit().await.map_err(internal)?;
+            updated.rows_affected()
+        }
+        "visibility" => {
+            let public = input.is_public.ok_or_else(|| bad("缺少 is_public"))?;
+            if public {
+                ai::can_create(&user)?;
+            }
+            sqlx::query("UPDATE images SET is_public=$1 WHERE user_id=$2 AND id=ANY($3) AND deleted_at IS NULL
+                         AND (NOT $1 OR moderation_status NOT IN ('blocked','review'))")
+                .bind(public).bind(user.id).bind(&input.ids).execute(&state.pool).await.map_err(internal)?.rows_affected()
+        }
+        "delete" => {
+            let mut deleted = 0;
+            for &id in &input.ids {
+                deleted += u64::from(delete_owned_image(&state, &user, id).await?);
+            }
+            deleted
+        }
+        _ => return Err(bad("不支持的批量操作")),
+    };
+    Ok(Json(
+        serde_json::json!({"processed":processed,"skipped":input.ids.len() as u64 - processed}),
+    ))
 }
 #[derive(Serialize, sqlx::FromRow)]
 struct Album {
@@ -1069,7 +1355,7 @@ async fn admin_overview(
                    FROM users) u
              CROSS JOIN (SELECT COUNT(*) FILTER (WHERE deleted_at IS NULL) AS images_total,
                                 COUNT(*) FILTER (WHERE deleted_at IS NULL AND is_public) AS images_public,
-                                COALESCE(SUM(size_bytes), 0)::bigint AS used_bytes
+                                COALESCE(SUM(size_bytes) FILTER (WHERE deleted_at IS NULL), 0)::bigint AS used_bytes
                          FROM images) i
              CROSS JOIN settings s
          ) overview",
@@ -1170,7 +1456,8 @@ async fn update_user(
     if user.is_admin && input.disabled {
         return Err(bad("不能禁用管理员账号"));
     }
-    sqlx::query("UPDATE users SET quota_bytes=$1,disabled=$2,password_hash=COALESCE($3,password_hash),security_version=security_version+1 WHERE id=$4").bind(input.quota_bytes).bind(input.disabled).bind(&hash).bind(id).execute(&mut *tx).await.map_err(internal)?;
+    let changed = input.disabled != user.disabled || hash.is_some();
+    sqlx::query("UPDATE users SET quota_bytes=$1,disabled=$2,password_hash=COALESCE($3,password_hash),security_version=security_version+$5 WHERE id=$4").bind(input.quota_bytes).bind(input.disabled).bind(&hash).bind(id).bind(i64::from(changed)).execute(&mut *tx).await.map_err(internal)?;
     if input.disabled || hash.is_some() {
         sqlx::query("DELETE FROM sessions WHERE user_id=$1")
             .bind(id)
@@ -1205,7 +1492,6 @@ async fn serve_image(
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> ApiResult<Response> {
-    let _guard = state.uploads.lock().await;
     let id = image_id(&key).ok_or_else(missing)?;
     let row: ImageRow = sqlx::query_as("SELECT * FROM images WHERE id=$1 AND deleted_at IS NULL")
         .bind(id)
@@ -1217,20 +1503,49 @@ async fn serve_image(
         return Err(missing());
     }
     ai::authorize_image(&state, &headers, &row).await?;
-    let bytes = storage::read_image(&state, &row).await?;
+    cached_image(
+        &headers,
+        format!("\"img-{id}\""),
+        &row.content_type,
+        storage::read_image(&state, &row),
+    )
+    .await
+}
+fn etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag)
+}
+async fn cached_image(
+    request: &HeaderMap,
+    etag: String,
+    mime: &str,
+    load: impl std::future::Future<Output = ApiResult<Vec<u8>>>,
+) -> ApiResult<Response> {
+    let cache = [
+        (header::ETAG, etag.as_str()),
+        (header::CACHE_CONTROL, "private, no-cache"),
+    ];
+    if etag_matches(request, &etag) {
+        return Ok((StatusCode::NOT_MODIFIED, cache).into_response());
+    }
     Ok((
+        cache,
         [
             (
                 header::CONTENT_TYPE,
-                HeaderValue::from_str(&row.content_type).map_err(internal)?,
+                HeaderValue::from_str(mime).map_err(internal)?,
             ),
             (
                 header::X_CONTENT_TYPE_OPTIONS,
                 HeaderValue::from_static("nosniff"),
             ),
-            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
         ],
-        bytes,
+        load.await?,
     )
         .into_response())
 }
@@ -1245,17 +1560,37 @@ fn router(state: Arc<AppState>) -> Router {
         .allow_credentials(true)
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE]);
+    let origin = middleware::from_fn_with_state(state.clone(), protect_origin);
+    let sensitive = Router::new()
+        .route("/api/v1/me/totp/start", post(security::totp_start))
+        .route("/api/v1/me/totp/confirm", post(security::totp_confirm))
+        .route("/api/v1/me/totp/recovery", post(security::totp_recovery))
+        .route("/api/v1/me/tokens", post(tokens::create))
+        .route(
+            "/api/v1/images/{id}/shares",
+            get(shares::list).post(shares::create),
+        )
+        .route_layer(origin.clone())
+        .route_layer(middleware::map_response(no_store));
     Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/v1/settings", get(settings).patch(update_settings))
         .merge(security::routes())
         .merge(ai::routes())
+        .route("/api/v1/me/tokens", get(tokens::list))
+        .route("/api/v1/me/tokens/{id}", delete(tokens::remove))
+        .route(
+            "/api/v1/images/{id}/shares/{share_id}",
+            delete(shares::revoke),
+        )
+        .route("/s/{token}", get(shares::serve))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/register", post(register))
         .route("/api/v1/me", get(me))
         .route("/api/v1/me/password", post(change_password))
         .route("/api/v1/images", get(list_images).post(upload_image))
+        .route("/api/v1/images/batch", post(batch_images))
         .route(
             "/api/v1/images/{id}",
             patch(update_image).delete(delete_image),
@@ -1270,10 +1605,6 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/admin/users", get(users).post(create_user))
         .route("/api/v1/admin/users/{id}", patch(update_user))
         .route("/i/{*key}", get(serve_image))
-        .route(
-            "/api/v1/admin/storage",
-            get(management::storage).patch(management::set_storage),
-        )
         .route(
             "/api/v1/storage-locations",
             get(storage::list).post(storage::add),
@@ -1294,11 +1625,9 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/admin/system", get(management::system))
         .route("/api/v1/admin/system/check", post(management::check))
         .route("/api/v1/admin/system/{action}", post(management::action))
+        .layer(origin)
+        .merge(sensitive)
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            protect_origin,
-        ))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -1345,9 +1674,9 @@ async fn bootstrap(state: &AppState) -> anyhow::Result<()> {
             .fetch_all(&state.pool)
             .await?;
     for row in pending {
-        remove_file_record(state, &row)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.1))?;
+        if let Err(e) = remove_file_record(state, &row).await {
+            tracing::warn!(image_id = %row.id, error = %e.1, "pending image cleanup deferred");
+        }
     }
     Ok(())
 }
@@ -1437,7 +1766,15 @@ async fn main() -> anyhow::Result<()> {
         public_base_url,
         origin,
         contact_url,
-        uploads: Mutex::new(()),
+        storage_write: Mutex::new(()),
+        user_uploads: Mutex::default(),
+        trust_proxy: env::var("PICCOVE_TRUST_PROXY")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+        http: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(15))
+            .user_agent("PicCove")
+            .build()?,
         passwords: Arc::new(Semaphore::new(4)),
         security,
     });
@@ -1471,6 +1808,79 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_state() -> AppState {
+        AppState {
+            pool: PgPoolOptions::new()
+                .connect_lazy("postgres://localhost/test")
+                .unwrap(),
+            upload_dir: PathBuf::new(),
+            storage_roots: Vec::new(),
+            import_dir: None,
+            thumbnails: Arc::new(Semaphore::new(2)),
+            public_base_url: String::new(),
+            origin: String::new(),
+            contact_url: None,
+            storage_write: Mutex::default(),
+            user_uploads: Mutex::default(),
+            trust_proxy: false,
+            http: reqwest::Client::new(),
+            passwords: Arc::new(Semaphore::new(4)),
+            security: security::Security::new("http://127.0.0.1").unwrap(),
+        }
+    }
+    #[tokio::test]
+    async fn client_ip_requires_an_enabled_private_proxy_and_a_single_valid_ip() {
+        let mut state = test_state();
+        let mut headers = HeaderMap::new();
+        let real: IpAddr = "2001:db8::5".parse().unwrap();
+        headers.insert("x-real-ip", "2001:db8::5".parse().unwrap());
+        for (addr, trusted) in [
+            ("127.0.0.2", true),
+            ("10.0.0.1", true),
+            ("172.31.255.255", true),
+            ("192.168.0.2", true),
+            ("::1", true),
+            ("fc00::1", true),
+            ("fdff::1", true),
+            ("172.32.0.1", false),
+            ("203.0.113.7", false),
+            ("fe80::1", false),
+            ("2001:db8::1", false),
+        ] {
+            let peer = SocketAddr::new(addr.parse().unwrap(), 1234);
+            for enabled in [false, true] {
+                state.trust_proxy = enabled;
+                assert_eq!(
+                    client_ip(&headers, peer, &state),
+                    if enabled && trusted { real } else { peer.ip() }
+                );
+            }
+        }
+        let peer = "127.0.0.1:1234".parse::<SocketAddr>().unwrap();
+        headers.insert("x-real-ip", "192.0.2.1, 10.0.0.1".parse().unwrap());
+        assert_eq!(client_ip(&headers, peer, &state), peer.ip());
+        assert_eq!(client_ip(&HeaderMap::new(), peer, &state), peer.ip());
+    }
+    #[tokio::test]
+    async fn reconciliation_waits_only_for_its_owner_and_releases_idle_keys() {
+        let state = test_state();
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let uploading = state.user_upload(owner).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), state.user_upload(owner))
+                .await
+                .is_err()
+        );
+        drop(
+            tokio::time::timeout(Duration::from_secs(1), state.user_upload(other))
+                .await
+                .unwrap(),
+        );
+        drop(uploading);
+        let _next = state.user_upload(owner).await;
+        assert_eq!(state.user_uploads.lock().await.len(), 1);
+    }
     #[test]
     fn search_escapes_literals_and_counts_trimmed_characters() {
         assert_eq!(search_pattern(None, Some(100)).unwrap(), None);
@@ -1555,21 +1965,24 @@ mod tests {
         assert!(validate_password(&"x".repeat(129)).is_err());
         assert!(offset(Some(0)).is_err());
         assert_eq!(offset(Some(2)).unwrap(), 48);
-        assert!(validate_image(b"not an image").is_err());
     }
-    #[test]
-    fn image_decode_and_corruption() {
+    #[tokio::test]
+    async fn image_decode_and_corruption() {
+        assert!(validate_image(Bytes::from_static(b"not an image"), false)
+            .await
+            .is_err());
         let mut bytes = Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(2, 3)
             .write_to(&mut bytes, ImageFormat::Png)
             .unwrap();
+        let bytes = Bytes::from(bytes.into_inner());
+        let (_, image) = validate_image(bytes.clone(), false).await.unwrap();
         assert_eq!(
-            validate_image(bytes.get_ref()).unwrap(),
+            (image.ext, image.mime, image.width, image.height),
             ("png", "image/png", 2, 3)
         );
-        let mut broken = bytes.into_inner();
-        broken.truncate(40);
-        assert!(validate_image(&broken).is_err());
+        assert_eq!(image.hash, storage::hash(&bytes));
+        assert!(validate_image(bytes.slice(..40), false).await.is_err());
     }
     #[test]
     fn cookie_parsing_and_hashing() {
@@ -1583,5 +1996,111 @@ mod tests {
         assert_ne!(digest(&token), token);
         headers.insert(header::COOKIE, "piccove_session=bad".parse().unwrap());
         assert!(session_token(&headers).is_err());
+    }
+    #[tokio::test]
+    async fn conditional_images_match_lists_weak_and_wildcard_without_loading() {
+        let etag = "\"img-test\"";
+        let mut headers = HeaderMap::new();
+        for (value, matches) in [
+            ("\"img-test\"", true),
+            ("\"other\",  W/\"img-test\" ", true),
+            ("*", true),
+            ("\"thumb-test\"", false),
+            ("img-test", false),
+            ("W/*", false),
+        ] {
+            headers.insert(header::IF_NONE_MATCH, value.parse().unwrap());
+            assert_eq!(etag_matches(&headers, etag), matches);
+        }
+        headers.append(header::IF_NONE_MATCH, "W/\"img-test\"".parse().unwrap());
+        let hit = cached_image(&headers, etag.into(), "image/png", async {
+            panic!("unexpected file read")
+        })
+        .await
+        .unwrap();
+        assert_eq!(hit.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(hit.headers()[header::ETAG], etag);
+        assert_eq!(hit.headers()[header::CACHE_CONTROL], "private, no-cache");
+        let fresh = cached_image(&HeaderMap::new(), etag.into(), "image/png", async {
+            Ok(vec![1])
+        })
+        .await
+        .unwrap();
+        assert_eq!(fresh.status(), StatusCode::OK);
+        assert_eq!(fresh.headers()[header::ETAG], etag);
+        assert_eq!(fresh.headers()[header::CACHE_CONTROL], "private, no-cache");
+        assert_eq!(fresh.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    }
+    #[tokio::test]
+    async fn malformed_upload_bearer_cannot_use_a_session_cookie() {
+        let state = test_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("piccove_session={}", "a".repeat(64))
+                .parse()
+                .unwrap(),
+        );
+        for value in [
+            "Bearer pcv_invalid",
+            "Basic abc",
+            "Bearer invalid",
+            "Bearer pcv_",
+        ] {
+            headers.insert(header::AUTHORIZATION, value.parse().unwrap());
+            assert_eq!(
+                tokens::bearer(&headers).is_some(),
+                value.starts_with("Bearer pcv_")
+            );
+            let error = tokens::upload_auth(&headers, &state).await.err().unwrap();
+            assert_eq!(error.0, StatusCode::UNAUTHORIZED);
+        }
+    }
+    #[tokio::test]
+    async fn origin_and_sensitive_response_headers_apply_at_the_http_routes() {
+        use axum::{body::Body, handler::Handler, routing::any_service};
+        let mut state = test_state();
+        state.origin = "https://photos.example".into();
+        let api = any_service(router(Arc::new(state)));
+        let image = "/api/v1/images/00000000-0000-0000-0000-000000000001/shares";
+        for (method, path, expected) in [
+            (Method::POST, "/api/v1/me/totp/start", StatusCode::FORBIDDEN),
+            (
+                Method::POST,
+                "/api/v1/me/totp/confirm",
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                Method::POST,
+                "/api/v1/me/totp/recovery",
+                StatusCode::FORBIDDEN,
+            ),
+            (Method::POST, "/api/v1/me/tokens", StatusCode::FORBIDDEN),
+            (Method::POST, image, StatusCode::FORBIDDEN),
+            (Method::GET, image, StatusCode::UNAUTHORIZED),
+        ] {
+            let req = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::AUTHORIZATION, "Bearer pcv_invalid")
+                .body(Body::empty())
+                .unwrap();
+            let response = api.clone().call(req, ()).await;
+            assert_eq!(response.status(), expected);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        }
+        let upload = Request::post("/api/v1/images")
+            .header(header::AUTHORIZATION, "Bearer pcv_invalid")
+            .header(
+                header::COOKIE,
+                format!("piccove_session={}", "a".repeat(64)),
+            )
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=test")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            api.call(upload, ()).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

@@ -1,4 +1,6 @@
+import { lazy, Suspense } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { LoaderCircle } from 'lucide-react';
 import { ThemeProvider } from 'next-themes';
 import {
   createBrowserRouter,
@@ -10,16 +12,56 @@ import {
 import { AdminOnly, AppLayout } from '@/components/layout/app-layout';
 import { Toaster } from '@/components/ui/sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { AccountPage } from '@/features/account/account-page';
-import { AllImagesPage } from '@/features/admin/all-images-page';
-import { AdminOverviewPage } from '@/features/admin/overview-page';
-import { ReviewsPage } from '@/features/admin/reviews-page';
-import { AdminSettingsPage } from '@/features/admin/settings-page';
-import { UsersPage } from '@/features/admin/users-page';
-import { AiStudioPage } from '@/features/ai/ai-studio-page';
 import { AlbumsPage } from '@/features/albums/albums-page';
 import { AuthPage, HomePage } from '@/features/auth/public-pages';
 import { GalleryPage } from '@/features/gallery/gallery-page';
+
+const AiStudioPage = lazy(() =>
+  import('@/features/ai/ai-studio-page').then((m) => ({
+    default: m.AiStudioPage,
+  })),
+);
+const AccountPage = lazy(() =>
+  import('@/features/account/account-page').then((m) => ({
+    default: m.AccountPage,
+  })),
+);
+const AdminOverviewPage = lazy(() =>
+  import('@/features/admin/overview-page').then((m) => ({
+    default: m.AdminOverviewPage,
+  })),
+);
+const ReviewsPage = lazy(() =>
+  import('@/features/admin/reviews-page').then((m) => ({
+    default: m.ReviewsPage,
+  })),
+);
+const AllImagesPage = lazy(() =>
+  import('@/features/admin/all-images-page').then((m) => ({
+    default: m.AllImagesPage,
+  })),
+);
+const UsersPage = lazy(() =>
+  import('@/features/admin/users-page').then((m) => ({
+    default: m.UsersPage,
+  })),
+);
+const AdminSettingsPage = lazy(() =>
+  import('@/features/admin/settings-page').then((m) => ({
+    default: m.AdminSettingsPage,
+  })),
+);
+
+function RouteFallback() {
+  return (
+    <div
+      role="status"
+      className="flex py-20 items-center justify-center text-muted-foreground"
+    >
+      <LoaderCircle className="size-5 animate-spin text-primary" />
+    </div>
+  );
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,13 +81,29 @@ const router = createBrowserRouter(
       <Route path="/app" element={<AppLayout />}>
         <Route index element={<GalleryPage />} />
         <Route path="albums" element={<AlbumsPage />} />
-        <Route path="ai" element={<AiStudioPage />} />
-        <Route path="account" element={<AccountPage />} />
+        <Route
+          path="ai"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AiStudioPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="account"
+          element={
+            <Suspense fallback={<RouteFallback />}>
+              <AccountPage />
+            </Suspense>
+          }
+        />
         <Route
           path="admin"
           element={
             <AdminOnly>
-              <AdminOverviewPage />
+              <Suspense fallback={<RouteFallback />}>
+                <AdminOverviewPage />
+              </Suspense>
             </AdminOnly>
           }
         />
@@ -53,7 +111,9 @@ const router = createBrowserRouter(
           path="admin/reviews"
           element={
             <AdminOnly>
-              <ReviewsPage />
+              <Suspense fallback={<RouteFallback />}>
+                <ReviewsPage />
+              </Suspense>
             </AdminOnly>
           }
         />
@@ -61,7 +121,9 @@ const router = createBrowserRouter(
           path="admin/images"
           element={
             <AdminOnly>
-              <AllImagesPage />
+              <Suspense fallback={<RouteFallback />}>
+                <AllImagesPage />
+              </Suspense>
             </AdminOnly>
           }
         />
@@ -69,7 +131,9 @@ const router = createBrowserRouter(
           path="admin/users"
           element={
             <AdminOnly>
-              <UsersPage />
+              <Suspense fallback={<RouteFallback />}>
+                <UsersPage />
+              </Suspense>
             </AdminOnly>
           }
         />
@@ -77,7 +141,9 @@ const router = createBrowserRouter(
           path="admin/settings"
           element={
             <AdminOnly>
-              <AdminSettingsPage />
+              <Suspense fallback={<RouteFallback />}>
+                <AdminSettingsPage />
+              </Suspense>
             </AdminOnly>
           }
         />

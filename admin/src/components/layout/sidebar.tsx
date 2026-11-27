@@ -182,7 +182,13 @@ export function Sidebar({
           <BrandLogo to="/app" compact />
         </div>
         <Button
-          onClick={() => setSidebarCollapse(!sidebarCollapse)}
+          onClick={(e) => {
+            const next = !sidebarCollapse;
+            setSidebarCollapse(next);
+            if (next) {
+              e.currentTarget.blur();
+            }
+          }}
           size="sm"
           mode="icon"
           variant="outline"

@@ -34,6 +34,7 @@ export type UploadItem = {
   uncertain?: boolean;
   targetAlbum: string;
   targetPrivate?: boolean;
+  stripMetadata?: boolean;
   status: string;
   progress: number;
   error?: string;
@@ -48,9 +49,11 @@ type UploadContextValue = {
     files: FileList | File[],
     targetAlbum: string,
     targetPrivate?: boolean,
+    stripMetadata?: boolean,
   ) => void;
   retryFailed: () => void;
   clearQueue: () => void;
+  clearCompleted: () => void;
   removeImage: (id: string) => void;
   removePending: (id: string) => void;
   stopWaiting: () => void;
@@ -86,6 +89,18 @@ export function UploadProvider({
   const busyRef = useRef(false);
   const mounted = useRef(true);
   const [ready, setReady] = useState(false);
+  const readyGateRef = useRef<{
+    owner: string;
+    promise: Promise<void>;
+    resolve: () => void;
+  } | null>(null);
+  if (!readyGateRef.current || readyGateRef.current.owner !== owner) {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    readyGateRef.current = { owner, promise, resolve };
+  }
   const [storageError, setStorageError] = useState('');
   const writes = useRef(Promise.resolve());
   const persistenceFailed = useRef(false);
@@ -113,14 +128,23 @@ export function UploadProvider({
     void loadUploads(owner)
       .then((items) => {
         if (cancelled) return;
+        const now = Date.now();
+        const expiredFinished = items
+          .filter((item) => !!item.image && now - item.queuedAt > 86_400_000)
+          .map((item) => item.id);
+        if (expiredFinished.length > 0) {
+          void deleteUploads(owner, expiredFinished).catch(() => {});
+        }
         const restored = items
+          .filter((item) => !(item.image && now - item.queuedAt > 86_400_000))
           .sort((a, b) => a.queuedAt - b.queuedAt)
           .map((item) =>
             item.image
               ? item
               : {
                   ...item,
-                  status: item.status === '失败' && !item.file ? '失败' : '等待重试',
+                  status:
+                    item.status === '失败' && !item.file ? '失败' : '等待重试',
                   progress: 0,
                   uncertain:
                     item.uncertain ||
@@ -136,7 +160,10 @@ export function UploadProvider({
           setStorageError('浏览器本地队列不可用，本页仍可正常上传。');
       })
       .finally(() => {
-        if (!cancelled) setReady(true);
+        if (!cancelled) {
+          setReady(true);
+          readyGateRef.current?.resolve();
+        }
       });
     return () => {
       cancelled = true;
@@ -250,6 +277,7 @@ export function UploadProvider({
   async function process(signal: AbortSignal) {
     const errors: string[] = [];
     let paused = false;
+    let uploadedAny = false;
     while (true) {
       const item = queueRef.current.find((row) => row.status === '等待');
       if (!mounted.current || signal.aborted || !item) break;
@@ -295,7 +323,12 @@ export function UploadProvider({
             ).items[0];
           } catch (err) {
             if (err instanceof ApiError) {
-              throw new UploadError(err.message, err.status);
+              throw new UploadError(
+                [401, 409].includes(err.status)
+                  ? err.message
+                  : '暂时无法核对上次上传状态，请稍后重试（未重复上传）',
+                err.status,
+              );
             }
             throw new Error('暂时无法核对上次上传状态，请稍后重试（未重复上传）');
           } finally {
@@ -318,6 +351,7 @@ export function UploadProvider({
           `expected_user_id=${owner}`,
           item.targetAlbum !== 'all' ? `album_id=${item.targetAlbum}` : '',
           item.targetPrivate ? 'private=true' : '',
+          item.stripMetadata ? 'strip_metadata=true' : '',
         ]
           .filter(Boolean)
           .join('&');
@@ -356,6 +390,7 @@ export function UploadProvider({
               : row,
           ),
         );
+        uploadedAny = true;
       } catch (error) {
         const text = error instanceof Error ? error.message : '操作失败';
         update((items) =>
@@ -404,12 +439,14 @@ export function UploadProvider({
         );
       setBusy(false);
       busyRef.current = false;
-      await Promise.all([
-        client.invalidateQueries({ queryKey: ['images'] }),
-        client.invalidateQueries({ queryKey: ['me'] }),
-        client.invalidateQueries({ queryKey: ['albums'] }),
-        client.invalidateQueries({ queryKey: ['admin-overview'] }),
-      ]);
+      if (uploadedAny) {
+        await Promise.all([
+          client.invalidateQueries({ queryKey: ['images'] }),
+          client.invalidateQueries({ queryKey: ['me'] }),
+          client.invalidateQueries({ queryKey: ['albums'] }),
+          client.invalidateQueries({ queryKey: ['admin-overview'] }),
+        ]);
+      }
       if (!mounted.current || busyRef.current) return;
       if (paused || queueRef.current.some((item) => item.status === '等待重试'))
         toast.error('上传已暂停，可在右上角上传列表中点击重试');
@@ -434,12 +471,12 @@ export function UploadProvider({
     files: FileList | File[],
     targetAlbum: string,
     targetPrivate = false,
+    stripMetadata = false,
   ) {
-    if (!files.length) return;
-    if (!ready) {
-      toast.info('正在读取上传状态，请稍候');
-      return;
-    }
+    const selectedFiles = Array.from(files);
+    if (!selectedFiles.length) return;
+    await readyGateRef.current?.promise;
+    if (!mounted.current) return;
     if (retryAfter > Date.now()) {
       toast.info('上传过于频繁，请稍后再试');
       return;
@@ -449,7 +486,7 @@ export function UploadProvider({
       (queueRef.current[queueRef.current.length - 1]?.queuedAt || 0) + 1,
     );
     let rejectedCount = 0;
-    const items: UploadItem[] = Array.from(files).map((file, index) => {
+    const items: UploadItem[] = selectedFiles.map((file, index) => {
       const invalidSize = !file.size || file.size > MAX_FILE_BYTES;
       if (invalidSize) rejectedCount++;
       return {
@@ -459,6 +496,7 @@ export function UploadProvider({
         queuedAt: baseTime + index,
         targetAlbum,
         targetPrivate,
+        stripMetadata,
         status: invalidSize ? '失败' : '等待',
         progress: 0,
         error: invalidSize
@@ -519,6 +557,10 @@ export function UploadProvider({
     }
   }
 
+  function clearCompleted() {
+    void update((items) => items.filter((item) => !item.image));
+  }
+
   function removeImage(imageId: string) {
     void update((items) => items.filter((item) => item.image?.id !== imageId));
   }
@@ -551,6 +593,7 @@ export function UploadProvider({
         upload,
         retryFailed,
         clearQueue,
+        clearCompleted,
         removeImage,
         removePending,
         stopWaiting,
@@ -571,42 +614,44 @@ export function UploadProvider({
       }}
     >
       {children}
-      <AlertDialog
-        open={!!leavePrompt}
-        onOpenChange={(open) => {
-          if (!open && leavePrompt) {
-            leavePrompt.resolve(false);
-            setLeavePrompt(null);
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>离开工作台？</AlertDialogTitle>
-            <AlertDialogDescription>
-              {leavePrompt?.message}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              onClick={() => {
-                leavePrompt?.resolve(false);
-                setLeavePrompt(null);
-              }}
-            >
-              继续留在工作台
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                leavePrompt?.resolve(true);
-                setLeavePrompt(null);
-              }}
-            >
-              确认离开
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {leavePrompt && (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              leavePrompt.resolve(false);
+              setLeavePrompt(null);
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>离开工作台？</AlertDialogTitle>
+              <AlertDialogDescription>
+                {leavePrompt.message}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel
+                onClick={() => {
+                  leavePrompt.resolve(false);
+                  setLeavePrompt(null);
+                }}
+              >
+                继续留在工作台
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  leavePrompt.resolve(true);
+                  setLeavePrompt(null);
+                }}
+              >
+                确认离开
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </UploadContext.Provider>
   );
 }

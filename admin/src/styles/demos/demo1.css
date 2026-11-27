@@ -133,15 +133,15 @@
       inset-inline-start: 0.4rem;
       top: 0.35rem;
     }
-  }
 
-  .demo1.layout-initialized .wrapper {
-    transition: padding-inline-start var(--sidebar-transition-duration)
-      var(--sidebar-transition-timing);
-  }
+    .demo1.layout-initialized .wrapper {
+      transition: padding-inline-start var(--sidebar-transition-duration)
+        var(--sidebar-transition-timing);
+    }
 
-  .demo1.layout-initialized .header {
-    transition: inset-inline-start var(--sidebar-transition-duration)
-      var(--sidebar-transition-timing);
+    .demo1.layout-initialized .header {
+      transition: inset-inline-start var(--sidebar-transition-duration)
+        var(--sidebar-transition-timing);
+    }
   }
 }

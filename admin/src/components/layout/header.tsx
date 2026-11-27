@@ -55,6 +55,7 @@ export function Header({
   pendingReviews?: number;
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -249,7 +250,7 @@ export function Header({
             )}
           </Button>
 
-          <DropdownMenu>
+          <DropdownMenu open={userMenuOpen} onOpenChange={setUserMenuOpen}>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -360,7 +361,10 @@ export function Header({
                   variant="outline"
                   size="sm"
                   className="w-full justify-center"
-                  onClick={() => void handleLogout()}
+                  onClick={() => {
+                    setUserMenuOpen(false);
+                    void handleLogout();
+                  }}
                 >
                   <LogOut />
                   退出登录

@@ -75,9 +75,8 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/me/username", post(rename))
         .route("/api/v1/me/security", get(status))
-        .route("/api/v1/me/totp/start", post(totp_start))
-        .route("/api/v1/me/totp/confirm", post(totp_confirm))
         .route("/api/v1/me/totp/remove", post(totp_remove))
+        .route("/api/v1/admin/users/{id}/reset-2fa", post(reset_totp))
         .route("/api/v1/me/passkeys/start", post(register_start))
         .route("/api/v1/me/passkeys/finish", post(register_finish))
         .route("/api/v1/me/passkeys/remove", post(passkey_remove))
@@ -97,17 +96,13 @@ pub async fn lock_current(tx: &mut Tx<'_>, user: &User, headers: &HeaderMap) -> 
     Ok(())
 }
 async fn lock_version(tx: &mut Tx<'_>, user: &User) -> ApiResult<()> {
-    let current: User = sqlx::query_as("SELECT * FROM users WHERE id=$1 FOR UPDATE")
+    sqlx::query("SELECT id FROM users WHERE id=$1 AND NOT disabled AND security_version=$2 AND password_hash=$3 FOR UPDATE")
         .bind(user.id)
-        .fetch_one(&mut **tx)
+        .bind(user.security_version)
+        .bind(&user.password_hash)
+        .fetch_optional(&mut **tx)
         .await
-        .map_err(internal)?;
-    if current.disabled
-        || current.security_version != user.security_version
-        || current.password_hash != user.password_hash
-    {
-        return Err(unauthorized());
-    }
+        .map_err(internal)?.ok_or_else(unauthorized)?;
     Ok(())
 }
 fn totp(secret: &str, username: &str) -> ApiResult<TOTP> {
@@ -137,25 +132,70 @@ fn code_step(secret: &str, code: &str, now: i64, last: i64) -> ApiResult<i64> {
     Err(bad("验证码无效或已使用，请等待下一组验证码"))
 }
 pub async fn verify_totp(tx: &mut Tx<'_>, id: Uuid, code: &str) -> ApiResult<()> {
-    let (secret, last): (Option<String>, i64) =
-        sqlx::query_as("SELECT totp_secret,totp_last_step FROM users WHERE id=$1")
-            .bind(id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(internal)?;
-    if let Some(secret) = secret {
-        let step = code_step(&secret, code, Utc::now().timestamp(), last)?;
-        sqlx::query("UPDATE users SET totp_last_step=$1 WHERE id=$2")
-            .bind(step)
-            .bind(id)
-            .execute(&mut **tx)
-            .await
-            .map_err(internal)?;
+    let (secret, last, mut hashes): (Option<String>, i64, sqlx::types::Json<Vec<String>>) =
+        sqlx::query_as(
+            "SELECT totp_secret,totp_last_step,totp_recovery_hashes FROM users WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(internal)?;
+    let Some(secret) = secret else { return Ok(()) };
+    match code_step(&secret, code, Utc::now().timestamp(), last) {
+        Ok(step) => {
+            sqlx::query("UPDATE users SET totp_last_step=$1 WHERE id=$2")
+                .bind(step)
+                .bind(id)
+                .execute(&mut **tx)
+                .await
+                .map_err(internal)?;
+        }
+        Err(ApiError(StatusCode::BAD_REQUEST, _)) => {
+            let candidate = recovery_hash(id, code);
+            let before = hashes.len();
+            hashes.retain(|hash| hash != &candidate);
+            if hashes.len() == before {
+                return Err(bad("动态验证码或恢复码无效或已使用"));
+            }
+            sqlx::query("UPDATE users SET totp_recovery_hashes=$2 WHERE id=$1")
+                .bind(id)
+                .bind(hashes)
+                .execute(&mut **tx)
+                .await
+                .map_err(internal)?;
+        }
+        Err(error) => return Err(error),
     }
     Ok(())
 }
+fn recovery_hash(id: Uuid, code: &str) -> String {
+    let normalized: String = code
+        .chars()
+        .filter(|&c| c != '-' && !c.is_whitespace())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    digest(&format!("piccove-recovery:{id}:{normalized}"))
+}
+fn new_recovery_codes(id: Uuid) -> ApiResult<(Vec<String>, sqlx::types::Json<Vec<String>>)> {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut codes = Vec::with_capacity(8);
+    while codes.len() < 8 {
+        let mut bytes = [0; 8];
+        openssl::rand::rand_bytes(&mut bytes).map_err(internal)?;
+        let mut code: String = bytes
+            .iter()
+            .map(|b| ALPHABET[(b & 31) as usize] as char)
+            .collect();
+        code.insert(4, '-');
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
+    }
+    let hashes = codes.iter().map(|code| recovery_hash(id, code)).collect();
+    Ok((codes, sqlx::types::Json(hashes)))
+}
 #[derive(Deserialize)]
-struct Proof {
+pub(super) struct Proof {
     current_password: String,
     #[serde(default)]
     code: String,
@@ -216,11 +256,6 @@ async fn status(
     headers: HeaderMap,
 ) -> ApiResult<Json<serde_json::Value>> {
     let user = authenticate(&headers, &state).await?;
-    let enabled: bool = sqlx::query_scalar("SELECT totp_secret IS NOT NULL FROM users WHERE id=$1")
-        .bind(user.id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(internal)?;
     let keys: Vec<(String, String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT id,name,created_at FROM passkeys WHERE user_id=$1 ORDER BY created_at",
     )
@@ -229,10 +264,12 @@ async fn status(
     .await
     .map_err(internal)?;
     Ok(Json(
-        serde_json::json!({"totp_enabled":enabled,"passkeys":keys.into_iter().map(|(id,name,created_at)| serde_json::json!({"id":id,"name":name,"created_at":created_at})).collect::<Vec<_>>()}),
+        serde_json::json!({"totp_enabled":user.totp_secret.is_some(),"recovery_remaining":user.totp_recovery_hashes.len(),
+            "api_tokens":tokens::for_user(&state.pool, user.id).await?,
+            "passkeys":keys.into_iter().map(|(id,name,created_at)| serde_json::json!({"id":id,"name":name,"created_at":created_at})).collect::<Vec<_>>()}),
     ))
 }
-async fn totp_start(
+pub(super) async fn totp_start(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(proof): Json<Proof>,
@@ -252,11 +289,11 @@ async fn totp_start(
         serde_json::json!({"secret":secret,"uri":generator.get_url()}),
     ))
 }
-async fn totp_confirm(
+pub(super) async fn totp_confirm(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(proof): Json<Proof>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<serde_json::Value>> {
     let user = reauthenticate(&state, &headers, &proof).await?;
     let mut tx = state.pool.begin().await.map_err(internal)?;
     lock_current(&mut tx, &user, &headers).await?;
@@ -264,11 +301,34 @@ async fn totp_confirm(
         .bind(user.id).fetch_optional(&mut *tx).await.map_err(internal)?.flatten();
     let secret = secret.ok_or_else(|| bad("绑定已过期，请重新开始"))?;
     let step = code_step(&secret, &proof.code, Utc::now().timestamp(), -1)?;
-    sqlx::query("UPDATE users SET totp_secret=$1,totp_last_step=$2,totp_pending=NULL,totp_pending_until=NULL WHERE id=$3")
-        .bind(secret).bind(step).bind(user.id).execute(&mut *tx).await.map_err(internal)?;
+    let (codes, hashes) = new_recovery_codes(user.id)?;
+    sqlx::query("UPDATE users SET totp_secret=$1,totp_last_step=$2,totp_pending=NULL,totp_pending_until=NULL,totp_recovery_hashes=$4 WHERE id=$3")
+        .bind(secret).bind(step).bind(user.id).bind(hashes).execute(&mut *tx).await.map_err(internal)?;
     changed(&mut tx, &user, &headers).await?;
     tx.commit().await.map_err(internal)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({"recovery_codes":codes})))
+}
+pub(super) async fn totp_recovery(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(proof): Json<Proof>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let user = reauthenticate(&state, &headers, &proof).await?;
+    if user.totp_secret.is_none() {
+        return Err(bad("请先开启二步验证"));
+    }
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    lock_current(&mut tx, &user, &headers).await?;
+    verify_totp(&mut tx, user.id, &proof.code).await?;
+    let (codes, hashes) = new_recovery_codes(user.id)?;
+    sqlx::query("UPDATE users SET totp_recovery_hashes=$2 WHERE id=$1")
+        .bind(user.id)
+        .bind(hashes)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok(Json(serde_json::json!({"recovery_codes":codes})))
 }
 async fn totp_remove(
     State(state): State<Arc<AppState>>,
@@ -279,9 +339,49 @@ async fn totp_remove(
     let mut tx = state.pool.begin().await.map_err(internal)?;
     lock_current(&mut tx, &user, &headers).await?;
     verify_totp(&mut tx, user.id, &proof.code).await?;
-    sqlx::query("UPDATE users SET totp_secret=NULL,totp_last_step=-1,totp_pending=NULL,totp_pending_until=NULL WHERE id=$1")
-        .bind(user.id).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query(&format!(
+        "UPDATE users SET {} WHERE id=$1",
+        account::CLEAR_TOTP
+    ))
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal)?;
     changed(&mut tx, &user, &headers).await?;
+    tx.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn reset_totp(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    administrator(&headers, &state).await?;
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    let admin: bool = sqlx::query_scalar("SELECT is_admin FROM users WHERE id=$1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal)?
+        .ok_or_else(missing)?;
+    if admin {
+        return Err(bad(
+            "管理员账号请通过服务器命令行 piccovectl reset-2fa 重置",
+        ));
+    }
+    sqlx::query(&format!(
+        "UPDATE users SET {},security_version=security_version+1 WHERE id=$1",
+        account::CLEAR_TOTP
+    ))
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal)?;
+    sqlx::query("DELETE FROM sessions WHERE user_id=$1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -436,10 +536,15 @@ struct LoginStart {
 async fn login_start(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(input): Json<LoginStart>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    rate(&state, format!("login:{}", peer.ip()), 20, 60).await?;
-    rate(&state, "login:global".into(), 120, 60).await?;
+    if !valid_username(&input.username) {
+        return Err(bad("无法使用 Passkey，请使用密码登录"));
+    }
+    let ip = client_ip(&headers, peer, &state);
+    rate(&state, format!("passkey-start:{ip}"), 20, 60).await?;
+    rate(&state, "passkey:global".into(), 120, 60).await?;
     let user: User = sqlx::query_as("SELECT * FROM users WHERE username=$1 AND NOT disabled")
         .bind(input.username)
         .fetch_optional(&state.pool)
@@ -469,9 +574,11 @@ struct LoginFinish {
 async fn login_finish(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(input): Json<LoginFinish>,
 ) -> ApiResult<Response> {
-    rate(&state, format!("passkey-finish:{}", peer.ip()), 20, 60).await?;
+    let ip = client_ip(&headers, peer, &state);
+    rate(&state, format!("passkey-finish:{ip}"), 20, 60).await?;
     let challenge = state.security.take(input.id).await?;
     let Ceremony::Login(authentication) = challenge.ceremony else {
         return Err(bad("验证类型不匹配"));
@@ -530,6 +637,58 @@ async fn login_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn user_json_exposes_only_totp_enrollment() {
+        let mut user = User {
+            id: Uuid::nil(),
+            username: "alice".into(),
+            is_admin: false,
+            disabled: false,
+            quota_bytes: 0,
+            moderation_exempt: false,
+            violation_count: 0,
+            content_ban: None,
+            password_hash: "password-hash".into(),
+            created_at: Utc::now(),
+            security_version: 0,
+            totp_secret: None,
+            totp_recovery_hashes: sqlx::types::Json(vec!["recovery-hash".into()]),
+        };
+        for secret in [None, Some("secret".to_owned())] {
+            user.totp_secret = secret;
+            let json = serde_json::to_value(&user).unwrap();
+            assert_eq!(json["totp_enabled"], user.totp_secret.is_some());
+            for key in ["totp_secret", "totp_recovery_hashes", "password_hash"] {
+                assert!(json.get(key).is_none());
+            }
+        }
+    }
+    #[test]
+    fn recovery_codes_are_normalized_and_bound_to_the_account() {
+        let id = Uuid::nil();
+        let hash = recovery_hash(id, " abCd-\t23 45\n");
+        assert_eq!(
+            hash,
+            "4087a1c6816a2726cc1878d66a7cba5415c8b8fbb16cf5f9396e200fbc38bae7"
+        );
+        assert_ne!(hash, recovery_hash(Uuid::new_v4(), "ABCD2345"));
+        let (codes, hashes) = new_recovery_codes(id).unwrap();
+        assert_eq!(codes.len(), 8);
+        assert_eq!(hashes.len(), 8);
+        assert_eq!(
+            codes.iter().collect::<std::collections::HashSet<_>>().len(),
+            8
+        );
+        for (code, hash) in codes.iter().zip(hashes.iter()) {
+            assert_eq!(code.len(), 9);
+            assert_eq!(code.as_bytes()[4], b'-');
+            assert!(code[..4]
+                .bytes()
+                .chain(code[5..].bytes())
+                .all(|b| b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789".contains(&b)));
+            assert_eq!(&recovery_hash(id, code), hash);
+        }
+    }
     #[test]
     fn totp_rejects_replay_bad_codes_and_expired_codes() {
         let secret = Secret::Raw(b"12345678901234567890".to_vec())

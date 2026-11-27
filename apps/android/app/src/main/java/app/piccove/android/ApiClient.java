@@ -30,7 +30,13 @@ final class ApiClient {
     byte[] image(String id) throws Exception {
         return exchange("GET", "/i/" + UUID.fromString(id), null, null, MAX_IMAGE);
     }
+    byte[] thumbnail(String id) throws Exception {
+        return exchange("GET", "/api/v1/images/" + UUID.fromString(id) + "/thumbnail", null, null, 2 * 1024 * 1024);
+    }
     JSONObject upload(String filename, byte[] image) throws Exception {
+        return upload(filename, image, null);
+    }
+    JSONObject upload(String filename, byte[] image, String albumId) throws Exception {
         String boundary = "piccove-" + UUID.randomUUID();
         String safe = filename.replaceAll("[\\r\\n\"\\\\]", "_");
         ByteArrayOutputStream body = new ByteArrayOutputStream();
@@ -38,7 +44,8 @@ final class ApiClient {
                 + "\"\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
         body.write(image);
         body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-        JSONObject result = new JSONObject(new String(exchange("POST", "/api/v1/images?private=true", body.toByteArray(),
+        String query = "/api/v1/images?private=true" + (albumId == null ? "" : "&album_id=" + UUID.fromString(albumId));
+        JSONObject result = new JSONObject(new String(exchange("POST", query, body.toByteArray(),
                 "multipart/form-data; boundary=" + boundary, 2 * 1024 * 1024), StandardCharsets.UTF_8));
         if (!result.has("is_public") || (result.getBoolean("is_public") && !result.optBoolean("duplicate"))) throw new IOException("服务端未按私有图片保存，请停止上传并检查服务端版本");
         return result;

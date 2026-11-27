@@ -4,12 +4,10 @@ import {
   ArrowRightLeft,
   Check,
   ChevronsUpDown,
-  ExternalLink,
   FolderInput,
   HardDrive,
   ListTodo,
   RefreshCw,
-  RotateCw,
   Server,
   Sparkles,
   UserPlus,
@@ -66,11 +64,10 @@ import {
   type FileJobItem,
   type ImportCandidate,
   type Page,
-  type ReleaseCheck,
   type StorageLocation,
-  type SystemStatus,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { SystemServiceCard } from './system-service-card';
 
 const SECTIONS = [
   ['ai', 'AI 生图与审核', Sparkles],
@@ -459,6 +456,11 @@ function AiSettingsForm({
               />
               拉取模型列表
             </Button>
+            {models.moderation?.length ? (
+              <span className="text-xs text-muted-foreground">
+                已读取 {models.moderation.length} 个模型
+              </span>
+            ) : null}
           </div>
 
           <datalist id="moderation-models">
@@ -1202,15 +1204,23 @@ function JobsPanel({ initialJobId }: { initialJobId?: string }) {
   const jobs = useQuery({
     queryKey: ['file-jobs'],
     queryFn: () => api<FileJob[]>('/file-jobs'),
-    refetchInterval: 3000,
+    refetchInterval: (q) =>
+      q.state.data?.some((j) => ['queued', 'running'].includes(j.status))
+        ? 3000
+        : false,
   });
+
+  const selectedJob = jobs.data?.find((j) => j.id === detailId);
 
   const details = useQuery({
     queryKey: ['file-job', detailId, detailPage],
     queryFn: () =>
       api<FileJobItem[]>(`/file-jobs/${detailId}?page=${detailPage}`),
     enabled: !!detailId,
-    refetchInterval: 3000,
+    refetchInterval:
+      selectedJob && ['queued', 'running'].includes(selectedJob.status)
+        ? 3000
+        : false,
   });
 
   async function retryJob(id: string) {
@@ -1438,198 +1448,7 @@ function JobsPanel({ initialJobId }: { initialJobId?: string }) {
 }
 
 function SystemServicePanel() {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [release, setRelease] = useState<ReleaseCheck | null>(null);
-  const [confirmAction, setConfirmAction] = useState<
-    'update' | 'restart' | null
-  >(null);
-
-  const system = useQuery({
-    queryKey: ['system'],
-    queryFn: () => api<SystemStatus>('/admin/system'),
-    refetchInterval: 5000,
-  });
-
-  const running = system.data?.manager?.state === 'running';
-
-  async function checkUpdate() {
-    setBusy(true);
-    try {
-      const res = await api<ReleaseCheck>('/admin/system/check', 'POST');
-      setRelease(res);
-      toast.success('版本检查完成');
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function executeAction() {
-    if (!confirmAction || busy) return;
-    setBusy(true);
-    try {
-      await api(`/admin/system/${confirmAction}`, 'POST');
-      toast.success('任务已提交，请等待服务恢复');
-      setConfirmAction(null);
-      await client.invalidateQueries({ queryKey: ['system'] });
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>版本检查与服务控制</CardTitle>
-            <CardDescription>
-              查询最新 GitHub 稳定发行版，执行宿主机在线升级或重启
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <div className="grid sm:grid-cols-2 gap-4 rounded-xl border border-border bg-muted/30 p-4">
-            <div>
-              <span className="text-xs text-muted-foreground block">
-                当前运行版本
-              </span>
-              <span className="text-base font-semibold text-mono font-mono">
-                {system.data?.version || '读取中…'}
-              </span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">
-                宿主机管理守护进程
-              </span>
-              <Badge
-                size="sm"
-                appearance="light"
-                variant={
-                  !system.data?.manager
-                    ? 'secondary'
-                    : running
-                      ? 'warning'
-                      : 'success'
-                }
-              >
-                {system.isPending
-                  ? '连接中'
-                  : !system.data?.manager
-                    ? '未连接'
-                    : running
-                      ? '正在执行任务'
-                      : '已连接'}
-              </Badge>
-            </div>
-          </div>
-
-          {release && (
-            <div className="rounded-xl border border-border p-4 flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span>
-                最新稳定版本：
-                <a
-                  href={release.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-semibold text-primary hover:underline inline-flex items-center gap-1 ms-1"
-                >
-                  {release.latest}
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </span>
-              <Badge
-                appearance="light"
-                variant={release.update_available ? 'warning' : 'success'}
-              >
-                {release.update_available ? '有新版本可用' : '无需升级'}
-              </Badge>
-            </div>
-          )}
-
-          {system.data?.manager_error && (
-            <p className="text-xs text-muted-foreground rounded-lg bg-muted/60 p-3" role="status">
-              未检测到宿主机 piccovectl web-manager 服务连接，在线升级与重启按钮暂不可用。
-            </p>
-          )}
-
-          {system.data?.manager?.message && (
-            <p className="text-xs text-muted-foreground" role="status">
-              {system.data.manager.message}
-            </p>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            <Button
-              variant="outline"
-              disabled={busy || running}
-              onClick={() => void checkUpdate()}
-            >
-              <RefreshCw className={busy ? 'animate-spin' : undefined} />
-              检查更新
-            </Button>
-            <Button
-              disabled={
-                busy ||
-                running ||
-                !system.data?.manager ||
-                !release?.update_available
-              }
-              onClick={() => setConfirmAction('update')}
-            >
-              升级并重启
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busy || running || !system.data?.manager}
-              onClick={() => setConfirmAction('restart')}
-            >
-              <RotateCw />
-              重启服务
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <AlertDialog
-        open={!!confirmAction}
-        onOpenChange={(open) => {
-          if (!open && !busy) setConfirmAction(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {confirmAction === 'update'
-                ? '确认升级并重启网站服务？'
-                : '确认重启网站服务？'}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmAction === 'update'
-                ? '升级过程中服务将短暂中断。在线升级不会自动备份数据库与原图，请确认已完成必要备份。'
-                : '重启期间网站将短暂不可访问，数秒后自动恢复。'}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={busy}
-              onClick={(e) => {
-                e.preventDefault();
-                void executeAction();
-              }}
-            >
-              {busy ? '正在提交…' : '确认执行'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  );
+  return <SystemServiceCard refetchInterval={5000} />;
 }
 
 export function AdminSettingsPage() {

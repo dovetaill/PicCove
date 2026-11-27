@@ -40,7 +40,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
-import { api, errorMessage, type Album } from '@/lib/api';
+import { api, errorMessage, useMe, type Album } from '@/lib/api';
 
 export function AlbumDialog({
   open,
@@ -81,9 +81,13 @@ export function AlbumDialog({
     }
   }
 
+  if (!open) {
+    return null;
+  }
+
   return (
     <Dialog
-      open={open}
+      open
       onOpenChange={(value) => {
         if (!value && !busy) onClose();
       }}
@@ -158,8 +162,9 @@ export function AlbumsPage() {
   const [deleting, setDeleting] = useState<Album | null>(null);
   const [busyDelete, setBusyDelete] = useState(false);
 
+  const me = useMe();
   const albums = useQuery({
-    queryKey: ['albums'],
+    queryKey: ['albums', me.data?.user.id || ''],
     queryFn: () => api<Album[]>('/albums'),
   });
 

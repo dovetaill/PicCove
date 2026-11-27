@@ -11,16 +11,6 @@ import {
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -56,13 +46,13 @@ export function UploadCenterSheet({
     retryAfter,
     retryFailed,
     clearQueue,
+    clearCompleted,
     removePending,
     stopWaiting,
     storageError,
     updateImages,
   } = useUploads();
   const client = useQueryClient();
-  const [confirmClear, setConfirmClear] = useState(false);
   const [copyingItems, setCopyingItems] = useState<Picture[]>([]);
   const [movingId, setMovingId] = useState<string | null>(null);
 
@@ -120,9 +110,13 @@ export function UploadCenterSheet({
     }
   }
 
+  if (!open) {
+    return null;
+  }
+
   return (
     <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
+      <Sheet open onOpenChange={onOpenChange}>
         <SheetContent side="right" className="w-full sm:max-w-md flex flex-col p-0 gap-0">
           <SheetHeader className="px-6 py-4 border-b border-border">
             <SheetTitle className="flex items-center gap-2">
@@ -164,20 +158,30 @@ export function UploadCenterSheet({
                 {retryAfter > Date.now() ? '请稍候重试' : `重试未完成（${retryableCount}）`}
               </Button>
             )}
-            {!busy && queue.length > 0 && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ms-auto text-muted-foreground"
-                onClick={() => {
-                  if (hasUnfinished) setConfirmClear(true);
-                  else void clearQueue();
-                }}
-              >
-                <Trash2 />
-                清空记录
-              </Button>
-            )}
+            <div className="ms-auto flex items-center gap-1.5">
+              {(busy || hasUnfinished) &&
+                completedCount + duplicateCount > 0 && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground"
+                    onClick={clearCompleted}
+                  >
+                    清除已完成
+                  </Button>
+                )}
+              {!busy && queue.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground"
+                  onClick={() => void clearQueue()}
+                >
+                  <Trash2 />
+                  清空记录
+                </Button>
+              )}
+            </div>
           </div>
 
           {storageError && (
@@ -340,28 +344,6 @@ export function UploadCenterSheet({
           </ScrollArea>
         </SheetContent>
       </Sheet>
-
-      <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>清空上传列表？</AlertDialogTitle>
-            <AlertDialogDescription>
-              未完成的排队项将被移除（已成功入库的图片不受影响）。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                void clearQueue();
-                setConfirmClear(false);
-              }}
-            >
-              确认清空
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       <LinksDialog
         pictures={copyingItems}

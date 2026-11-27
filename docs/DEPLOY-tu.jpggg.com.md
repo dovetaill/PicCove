@@ -53,7 +53,7 @@ services:
 
 ## Nginx 与证书
 
-- 站点配置：`/etc/nginx/conf.d/piccove-tu.jpggg.com.conf`，`root:root 0644`。
+- 站点配置：`/etc/nginx/conf.d/piccove-tu.jpggg.com.conf`，`root:root 0644`（反代透传 `proxy_set_header X-Real-IP $remote_addr;` 时，可在 `/opt/piccove/.env` 启用 `PICCOVE_TRUST_PROXY=true` 使登录与注册按真实客户端 IP 限流）。
 - ACME webroot：`/var/lib/piccove-acme`，`root:root 0755`。
 - 证书：`/etc/piccove/letsencrypt/live/tu.jpggg.com/`，首次签发证书到期日为 2027-01-21。
 - 独立续期任务：`piccove-cert-renew.timer`，每天检查两次，成功续期后向已核对可执行文件的 Nginx 主进程发送 HUP。
